@@ -63,9 +63,27 @@ with st.sidebar:
         with db:
             db.execute("""INSERT INTO preferences(key,value) VALUES('youtube_cookie_browser',?)
               ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (cookie_choice,))
+    sizes = {"Standard": 16, "Large": 20, "Extra large": 24}
+    saved_size_row = db.execute(
+        "SELECT value FROM preferences WHERE key='reading_size'").fetchone()
+    saved_size = saved_size_row["value"] if saved_size_row else "Standard"
+    size_choice = st.selectbox(
+        "Reading text size", list(sizes),
+        index=list(sizes).index(saved_size) if saved_size in sizes else 0)
+    if size_choice != saved_size:
+        with db:
+            db.execute("""INSERT INTO preferences(key,value) VALUES('reading_size',?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (size_choice,))
     metrics = pipeline.measures(db)
     st.metric("Summarized videos", metrics["ready"])
     st.caption(f"Local database: {DB}")
+
+st.markdown(f"""<style>
+.stApp p, .stApp li, .stApp label {{
+  font-size: {sizes[size_choice]}px !important;
+  line-height: 1.55 !important;
+}}
+</style>""", unsafe_allow_html=True)
 
 add_tab, find_tab, process_tab, library_tab, measure_tab = st.tabs(
     ["Add video", "Finding", "Processing", "Library", "Measure & learn"])
@@ -112,7 +130,7 @@ def finding_panel() -> None:
     connection = store.connect(DB)
     try:
         rows = [dict(row) for row in connection.execute(
-            """SELECT * FROM finding_tasks WHERE status NOT IN ('delivered','split')
+            """SELECT * FROM finding_tasks WHERE status NOT IN ('delivered','split','skipped')
                ORDER BY created_at DESC,id DESC""")]
         ready = [row for row in rows if row["status"] == "ready"]
         if ready and st.button("Process all AI verified videos", key="process_all"):
@@ -138,6 +156,10 @@ def finding_panel() -> None:
                 st.subheader(label or "Video", anchor=False)
                 st.caption(f"{row['kind']} · {row['status']} · {row['stage']}")
                 st.progress(float(row["progress"]), text=row["stage"])
+                if st.button("Delete from Finding", key=f"delete-find-{row['id']}",
+                             help="Remove this video from the queue without processing it"):
+                    tasks.skip_finding(connection, row["id"])
+                    st.rerun()
                 if row["kind"] == "card" and row["photo_path"]:
                     st.image(photo_region(row["photo_path"], card.get("bbox")), width=260)
                     st.caption(" · ".join(str(card.get(key, "")) for key in
@@ -412,24 +434,6 @@ with measure_tab:
             st.dataframe(per_video[["title", "category", "models", "calls", "tokens",
                                      "cost_low_usd", "cost_high_usd",
                                      "first_call", "last_call"]], hide_index=True)
-        st.markdown("#### Each video or finding task by step")
-        usage["task"] = usage["title"].fillna(
-            usage["finding_task_id"].map(lambda value: "Finding " + str(value)[:8]
-                                          if value else "Unassigned"))
-        task_steps = (usage.assign(calls=1).groupby(
-            ["task", "task_step", "response_model"], dropna=False, as_index=False)
-            .agg(calls=("calls", "sum"), input_tokens=("prompt_tokens", "sum"),
-                 output_tokens=("completion_tokens", "sum"),
-                 tokens=("total_tokens", "sum"),
-                 cost_low_usd=("estimated_cost_low_usd", "sum"),
-                 cost_high_usd=("estimated_cost_high_usd", "sum")))
-        st.dataframe(task_steps.rename(columns={
-            "task": "Video or finding task", "task_step": "Step",
-            "response_model": "Model", "calls": "AI calls",
-            "input_tokens": "Input tokens", "output_tokens": "Output tokens",
-            "tokens": "Total tokens", "cost_low_usd": "Off-peak USD",
-            "cost_high_usd": "Peak USD",
-        }), hide_index=True)
         with st.expander("Individual AI calls"):
             usage["video_or_task"] = usage["title"].fillna(
                 usage["finding_task_id"].fillna("—"))

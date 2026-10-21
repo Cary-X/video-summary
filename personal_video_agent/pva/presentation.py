@@ -8,8 +8,9 @@ _EVIDENCE_SUFFIX = re.compile(r"\s*\((?:(?:s|f):\d+(?:,\s*)?)+\)\s*$")
 
 
 def clean_summary(summary: str) -> str:
-    """Hide legacy internal citations without altering their stored audit trail."""
-    return "\n".join(_EVIDENCE_SUFFIX.sub("", line) for line in summary.splitlines())
+    """Hide internal citations and stray code-style backticks in reader text."""
+    return "\n".join(_EVIDENCE_SUFFIX.sub("", line).replace("`", "")
+                     for line in summary.splitlines())
 
 
 def timestamp(seconds: float) -> str:

@@ -21,10 +21,39 @@ def _update(db: sqlite3.Connection, table: str, task_id: str, *, status: str,
             stage: str, progress: float, detail: str = "", error: str | None = None) -> None:
     kind = "finding" if table == "finding_tasks" else "processing"
     with db:
-        db.execute(f"""UPDATE {table} SET status=?,stage=?,progress=?,error=?,updated_at=?
-                   WHERE id=?""", (status, stage, max(0, min(1, progress)), error,
-                                    store.now(), task_id))
-        _task_event(db, kind, task_id, stage, detail or stage)
+        active_only = " AND status!='skipped'" if table == "finding_tasks" else ""
+        updated = db.execute(f"""UPDATE {table}
+          SET status=?,stage=?,progress=?,error=?,updated_at=?
+          WHERE id=?{active_only}""",
+          (status, stage, max(0, min(1, progress)), error,
+           store.now(), task_id)).rowcount
+        if updated:
+            _task_event(db, kind, task_id, stage, detail or stage)
+
+
+def skip_finding(db: sqlite3.Connection, task_id: str) -> None:
+    """Remove a finding task from the queue, including a photo's unprocessed cards."""
+    row = db.execute("SELECT status FROM finding_tasks WHERE id=?", (task_id,)).fetchone()
+    if row is None:
+        raise KeyError(task_id)
+    if row["status"] in {"delivered", "split"}:
+        raise ValueError("This item has already moved out of Finding")
+    with db:
+        ids = [task_id] + [item["id"] for item in db.execute(
+            "SELECT id FROM finding_tasks WHERE parent_id=?", (task_id,))]
+        for current in ids:
+            changed = db.execute("""UPDATE finding_tasks
+              SET status='skipped',stage='skipped',progress=1,error=NULL,updated_at=?
+              WHERE id=? AND status NOT IN ('delivered','split','skipped')""",
+              (store.now(), current)).rowcount
+            if changed:
+                _task_event(db, "finding", current, "skipped",
+                            "Removed from Finding; video will not be processed")
+
+
+def _is_skipped(db: sqlite3.Connection, task_id: str) -> bool:
+    row = db.execute("SELECT status FROM finding_tasks WHERE id=?", (task_id,)).fetchone()
+    return row is None or row["status"] == "skipped"
 
 
 def enqueue_find(db: sqlite3.Connection, kind: str, source: str,
@@ -143,6 +172,8 @@ class TaskManager:
         db = store.connect(self.db_path)
         try:
             row = db.execute("SELECT * FROM finding_tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None or row["status"] == "skipped":
+                return
             kind = row["kind"]
             if kind == "photo":
                 _update(db, "finding_tasks", task_id, status="running", stage="identifying",
@@ -150,14 +181,20 @@ class TaskManager:
                 with intelligence.usage_context(self.db_path, finding_task_id=task_id):
                     identified = intelligence.identify_video_photo(Path(row["photo_path"]))
                 for card in identified["videos"]:
+                    if _is_skipped(db, task_id):
+                        return
                     enqueue_find(db, "card", row["photo_path"],
                                  photo_path=row["photo_path"], card=card, parent_id=task_id)
+                if _is_skipped(db, task_id):
+                    return
                 _update(db, "finding_tasks", task_id, status="split", stage="identified",
                         progress=1, detail=f"Created {len(identified['videos'])} separate video tasks")
             elif kind == "link":
                 _update(db, "finding_tasks", task_id, status="running", stage="metadata",
                         progress=0.3, detail="Resolving link metadata")
                 source = media.metadata(row["source"], cookie_browser=cookie_browser(db))
+                if _is_skipped(db, task_id):
+                    return
                 candidate = {key: source[key] for key in
                              ("url", "title", "author", "published_at", "duration")}
                 candidate.update({"score": 1.0, "verified": True,
@@ -175,12 +212,16 @@ class TaskManager:
                     card.get("title", ""), card.get("author", ""),
                     card.get("published_at", ""), limit=8,
                     cookie_browser=cookie_browser(db))
+                if _is_skipped(db, task_id):
+                    return
                 if not candidates:
                     raise ValueError("No video search results found")
                 _update(db, "finding_tasks", task_id, status="running", stage="checking",
                         progress=0.65, detail="DeepSeek is checking the search matches")
                 with intelligence.usage_context(self.db_path, finding_task_id=task_id):
                     checked = intelligence.verify_video_matches(card, candidates)
+                if _is_skipped(db, task_id):
+                    return
                 with db:
                     db.execute("UPDATE finding_tasks SET candidates_json=? WHERE id=?",
                                (json.dumps(checked, ensure_ascii=False), task_id))

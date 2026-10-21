@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 import json
@@ -346,6 +347,70 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Production time falls by half", summary)
         self.assertNotIn("s:7", summary)
         self.assertEqual(claims[0]["evidence"], ["s:7"])
+
+    def test_summary_does_not_show_numbers_in_code_font(self):
+        raw = "**Why it matters**\nFrom `639 a year to `0."
+        self.assertEqual(presentation.clean_summary(raw),
+                         "**Why it matters**\nFrom 639 a year to 0.")
+
+    def test_skipping_one_card_keeps_other_video_available(self):
+        left = tasks.enqueue_find(self.db, "card", "photo.jpg",
+                                  card={"title": "Left"})
+        right = tasks.enqueue_find(self.db, "card", "photo.jpg",
+                                   card={"title": "Right"})
+        with self.db:
+            for task_id in (left, right):
+                self.db.execute("UPDATE finding_tasks SET status='ready' WHERE id=?",
+                                (task_id,))
+        tasks.skip_finding(self.db, left)
+        statuses = {row["id"]: row["status"] for row in self.db.execute(
+            "SELECT id,status FROM finding_tasks WHERE id IN (?,?)", (left, right))}
+        self.assertEqual(statuses, {left: "skipped", right: "ready"})
+        with self.assertRaises(ValueError):
+            tasks.enqueue_processing(self.db, left, 0, "en")
+
+    def test_skipping_photo_before_split_skips_its_cards(self):
+        parent = tasks.enqueue_find(self.db, "photo", "photo.jpg")
+        child = tasks.enqueue_find(self.db, "card", "photo.jpg",
+                                   parent_id=parent, card={"title": "Child"})
+        tasks.skip_finding(self.db, parent)
+        statuses = {row["id"]: row["status"] for row in self.db.execute(
+            "SELECT id,status FROM finding_tasks WHERE id IN (?,?)", (parent, child))}
+        self.assertEqual(statuses, {parent: "skipped", child: "skipped"})
+
+    def test_skipping_running_finding_does_not_requeue_video(self):
+        task_id = tasks.enqueue_find(self.db, "link", self.url)
+        self.db.close()
+        manager = tasks.TaskManager(self.root / "personal.db", self.root, self.skill)
+        started, release = threading.Event(), threading.Event()
+
+        def metadata(url, **kwargs):
+            started.set()
+            self.assertTrue(release.wait(5))
+            return {"url": url, "title": "Example", "author": "A",
+                    "published_at": "", "duration": 10}
+
+        try:
+            with patch("pva.tasks.media.metadata", side_effect=metadata):
+                manager.pump()
+                self.assertTrue(started.wait(5))
+                db = store.connect(self.root / "personal.db")
+                tasks.skip_finding(db, task_id)
+                db.close()
+                release.set()
+                manager.find_pool.shutdown(wait=True)
+            db = store.connect(self.root / "personal.db")
+            self.assertEqual(db.execute(
+                "SELECT status FROM finding_tasks WHERE id=?", (task_id,)
+                ).fetchone()["status"], "skipped")
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM processing_tasks").fetchone()[0], 0)
+            db.close()
+        finally:
+            release.set()
+            manager.find_pool.shutdown(wait=True)
+            manager.process_pool.shutdown(wait=True)
+            self.db = store.connect(self.root / "personal.db")
 
     def test_one_photo_can_identify_two_video_cards(self):
         image = self.root / "photo.png"
