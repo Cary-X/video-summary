@@ -16,7 +16,7 @@ Copy-Item .env.example .env
 
 On this machine, the default `python` command is 32-bit. The working 64-bit executable is `C:\Users\10269\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; use it for the `-m venv .venv64` command if that is still your Python setup. Dependencies are already installed in this folder's `.venv64` environment.
 
-Configure the endpoint and API key in this folder's `.env`, or supply them as environment variables. The app does not read another project's `.env`. When the endpoint is `api.deepseek.com`, **every AI call uses `deepseek-flash`**, including identification, matching, translation, frame reading, summarization, and classification. The app stores `data/personal.db`, source photos, and selected screenshots locally. It sends images and transcript excerpts to the configured DeepSeek API. Keep Streamlit bound to localhost for this private, unauthenticated app.
+Configure the endpoint and API key in this folder's `.env`, or supply them as environment variables. Paste your DeepSeek key after `PVA_LLM_API_KEY=`; keep `.env` private. The app does not read another project's `.env`. When the endpoint is `api.deepseek.com`, **every AI call uses `deepseek-flash`**, including identification, matching, translation, frame reading, summarization, and classification. The app stores `data/personal.db`, source photos, and selected screenshots locally. It sends images and transcript excerpts to the configured DeepSeek API. Keep Streamlit bound to localhost for this private, unauthenticated app.
 
 ## Processing
 

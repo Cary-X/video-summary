@@ -159,8 +159,13 @@ def chat(messages: list[dict], *, vision: bool = False, purpose: str = "other") 
     model = ("deepseek-flash" if host == "api.deepseek.com" else
              ((os.getenv("PVA_VISION_MODEL") if vision else os.getenv("PVA_SUMMARY_MODEL")) or
               os.getenv("PVA_LLM_MODEL") or os.getenv("LLM_MODEL") or ""))
-    if not (base and key and model):
-        raise RuntimeError("Set PVA_LLM_BASE_URL, PVA_LLM_API_KEY and PVA_LLM_MODEL in personal_video_agent/.env")
+    missing = [name for name, value in (
+        ("PVA_LLM_BASE_URL", base), ("PVA_LLM_API_KEY", key),
+        ("PVA_LLM_MODEL", model)) if not value]
+    if missing:
+        raise RuntimeError("Missing " + ", ".join(missing) +
+                           " in personal_video_agent/.env. Paste your DeepSeek key "
+                           "after PVA_LLM_API_KEY= to enable AI calls.")
     body = json.dumps({"model": model, "messages": messages,
                        "temperature": 0.1}).encode("utf-8")
     request = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
