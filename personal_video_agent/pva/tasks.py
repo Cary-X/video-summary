@@ -88,7 +88,7 @@ def enqueue_processing_video(db: sqlite3.Connection, video_id: str,
 
 def cookie_browser(db: sqlite3.Connection) -> str:
     row = db.execute("SELECT value FROM preferences WHERE key='youtube_cookie_browser'").fetchone()
-    return row["value"] if row else ""
+    return row["value"] if row else "auto"
 
 
 class TaskManager:

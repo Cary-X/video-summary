@@ -159,6 +159,26 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(breakdown["mark"]["size"], 10)
         self.assertEqual(breakdown["encoding"]["x"]["scale"]["domain"][0], 0)
 
+    def test_usage_is_split_by_api_step_with_local_ocr_at_zero(self):
+        rows = []
+        for purpose, tokens, cost in (("photo identification", 10, 0.01),
+                                      ("match checking", 20, 0.02),
+                                      ("summary notes", 30, 0.03),
+                                      ("summary", 40, 0.04)):
+            rows.append({"at": "2026-10-20T01:00:00+00:00", "purpose": purpose,
+                         "prompt_tokens": tokens - 2, "completion_tokens": 2,
+                         "total_tokens": tokens, "cache_hit_tokens": 0,
+                         "cache_miss_tokens": tokens - 2,
+                         "estimated_cost_low_usd": cost / 2,
+                         "estimated_cost_high_usd": cost})
+        totals = usage_visuals.step_totals(usage_visuals.prepare_usage(rows))
+        by_step = totals.set_index("task_step")
+        self.assertEqual(by_step.loc["Identify photo", "tokens"], 10)
+        self.assertEqual(by_step.loc["Match video", "cost_high_usd"], 0.02)
+        self.assertEqual(by_step.loc["Summarize · final brief", "tokens"], 40)
+        self.assertEqual(by_step.loc["Local OCR", "tokens"], 0)
+        self.assertEqual(by_step.loc["Local ASR", "cost_high_usd"], 0)
+
     def test_bot_challenge_retries_with_selected_browser_cookies(self):
         anonymous = MagicMock()
         anonymous.__enter__.return_value.extract_info.side_effect = RuntimeError(
@@ -170,6 +190,26 @@ class AgentTests(unittest.TestCase):
             result = media.metadata(self.url, cookie_browser="chrome")
         self.assertEqual(result["title"], "Example")
         self.assertEqual(ydl.call_args.kwargs["cookie_browser"], "chrome")
+
+    def test_chrome_cookie_failure_falls_back_to_firefox(self):
+        anonymous = MagicMock()
+        anonymous.__enter__.return_value.extract_info.side_effect = RuntimeError(
+            "Sign in to confirm you're not a bot")
+        chrome = MagicMock()
+        chrome.__enter__.return_value.extract_info.side_effect = RuntimeError(
+            "failed to load cookies")
+        firefox = MagicMock()
+        firefox.__enter__.return_value.extract_info.return_value = {
+            "webpage_url": self.url, "title": "Example", "uploader": "A"}
+        with patch("pva.media._ydl", side_effect=[anonymous, chrome, firefox]) as ydl:
+            self.assertEqual(media.metadata(self.url, cookie_browser="chrome")["title"],
+                             "Example")
+        self.assertEqual([call.kwargs["cookie_browser"] for call in ydl.call_args_list],
+                         ["", "chrome", "firefox"])
+
+    def test_auto_browser_tries_firefox_first(self):
+        self.assertEqual(media._cookie_browsers("auto"),
+                         ["firefox", "chrome", "edge"])
 
     def test_chart_reference_keeps_frame_and_removes_temp_media(self):
         rows = [{"start": 1.0, "end": 3.0, "text": "The chart shows growth."}]

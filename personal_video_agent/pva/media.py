@@ -57,16 +57,62 @@ def _bot_challenge(exc: Exception) -> bool:
     return "not a bot" in message or "sign in to confirm" in message
 
 
+def _cookie_browsers(choice: str) -> list[str]:
+    """Try the selected browser first, with Firefox as the first auto choice."""
+    if not choice:
+        return []
+    order = ["firefox", "chrome", "edge"]
+    selected = choice.casefold()
+    if selected == "auto":
+        return order
+    if selected not in order:
+        raise ValueError("Unsupported YouTube cookie browser")
+    return [selected] + [browser for browser in order if browser != selected]
+
+
+def _cookie_retryable(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return _bot_challenge(exc) or any(phrase in message for phrase in (
+        "failed to load cookies", "could not find firefox cookies",
+        "could not find chrome cookies", "could not find edge cookies",
+        "failed to decrypt", "cookie database is locked", "http error 403"))
+
+
+def _with_cookie_fallback(operation, choice: str, *, retry_ssl: bool = False):
+    """Retry access problems across local browser profiles without saving cookies."""
+    browsers = _cookie_browsers(choice)
+    tried = []
+    try:
+        return operation("")
+    except Exception as exc:
+        if retry_ssl and "unexpected_eof_while_reading" in str(exc).casefold():
+            try:
+                return operation("")
+            except Exception as second:
+                exc = second
+        if not browsers or not _cookie_retryable(exc):
+            raise exc
+    for browser in browsers:
+        tried.append(browser)
+        try:
+            return operation(browser)
+        except Exception as exc:
+            if not _cookie_retryable(exc):
+                raise
+            last_error = exc
+    raise RuntimeError(
+        "YouTube access failed after trying " + ", ".join(tried) +
+        ". Sign in to YouTube in Firefox or choose another browser; last error: " +
+        str(last_error)) from last_error
+
+
 def metadata(url: str, *, cookie_browser: str = "") -> dict:
     valid_url(url)
-    try:
-        with _ydl({"skip_download": True}) as ydl:
+    def extract(browser: str):
+        with _ydl({"skip_download": True}, cookie_browser=browser) as ydl:
             info = ydl.extract_info(url, download=False)
-    except Exception as exc:
-        if not cookie_browser or not _bot_challenge(exc):
-            raise
-        with _ydl({"skip_download": True}, cookie_browser=cookie_browser) as ydl:
-            info = ydl.extract_info(url, download=False)
+        return info
+    info = _with_cookie_fallback(extract, cookie_browser)
     if not info or info.get("_type") == "playlist":
         raise ValueError("The link did not resolve to one video")
     return {
@@ -87,14 +133,11 @@ def search_candidates(title: str, author: str = "", published_at: str = "",
         raise ValueError("A title or readable photo text is needed to find the video")
     search = f"ytsearch{max(1, min(limit, 10))}:{query}"
     options = {"extract_flat": "in_playlist", "skip_download": True}
-    try:
-        with _ydl(options) as ydl:
+    def extract(browser: str):
+        with _ydl(options, cookie_browser=browser) as ydl:
             results = ydl.extract_info(search, download=False)
-    except Exception as exc:
-        if not cookie_browser or not _bot_challenge(exc):
-            raise
-        with _ydl(options, cookie_browser=cookie_browser) as ydl:
-            results = ydl.extract_info(search, download=False)
+        return results
+    results = _with_cookie_fallback(extract, cookie_browser)
     entries = (results or {}).get("entries") or []
     title_terms = set(re.findall(r"\w+", title.casefold()))
     author_terms = set(re.findall(r"\w+", author.casefold()))
@@ -191,21 +234,10 @@ def download_video(url: str, directory: Path, *, cookie_browser: str = "",
                "merge_output_format": "mp4", "retries": 3,
                "fragment_retries": 3, "socket_timeout": 20,
                "http_chunk_size": 1048576}
-    last_error = None
-    for attempt in range(2):
-        try:
-            with _ydl(options, cookie_browser=cookie_browser if attempt else "") as ydl:
-                ydl.download([url])
-            break
-        except Exception as exc:
-            last_error = exc
-            # Retry transient SSL disconnects. Browser cookies are used only when
-            # a selected browser may help with a YouTube sign-in challenge.
-            if attempt or not (_bot_challenge(exc) and cookie_browser or
-                              "unexpected_eof_while_reading" in str(exc).casefold()):
-                raise
-    else:
-        raise last_error or RuntimeError("Download failed")
+    def fetch(browser: str):
+        with _ydl(options, cookie_browser=browser) as ydl:
+            ydl.download([url])
+    _with_cookie_fallback(fetch, cookie_browser, retry_ssl=True)
     files = [x for x in directory.glob("source.*") if x.is_file() and not x.name.endswith(".part")]
     if not files:
         raise RuntimeError("The video could not be downloaded")

@@ -11,7 +11,7 @@ Build a useful private agent for one person. Accept a video URL or multiple scre
 - Target-language captions are preferred. Translation is skipped and recorded as such when the transcript language matches the target language.
 - Visual reading is selective, driven by spoken references. Screenshots are retained; temporary downloaded media is removed.
 - Claims refer to stored segment or frame IDs. The Library shows a briefing with the core message and importance, while evidence, merged transcript passages, screenshots, and processing trace stay in expanders.
-- DeepSeek response usage is stored per call with task step, time, model, tokens, and video when known. A dashboard charts daily tokens and totals by step and model, with a published-price cost range.
+- DeepSeek response usage is stored per call with task step, time, model, tokens, and video when known. A dashboard charts daily usage and shows separate cost and token totals by step, model, and video or finding task. Local OCR and ASR have zero DeepSeek API usage.
 - SQLite remains the personal source of truth. Feedback is saved and used on future summary calls.
 
 ## 3. Plan and build

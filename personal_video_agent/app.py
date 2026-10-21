@@ -52,12 +52,13 @@ with st.sidebar:
             db.execute("""INSERT INTO preferences(key,value) VALUES('summary_language',?)
               ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (target_language,))
     saved_browser = tasks.cookie_browser(db)
-    browsers = ["", "chrome", "edge", "firefox"]
+    browsers = ["auto", "firefox", "chrome", "edge", ""]
     cookie_choice = st.selectbox(
         "YouTube login browser", browsers,
         index=browsers.index(saved_browser) if saved_browser in browsers else 0,
-        format_func=lambda value: value.title() if value else "None",
-        help="If YouTube asks to confirm you are not a bot, yt-dlp can retry using a browser where you are signed in.")
+        format_func=lambda value: ("Automatic (Firefox, Chrome, Edge)" if value == "auto"
+                                   else value.title() if value else "No browser cookies"),
+        help="On a YouTube sign-in challenge, try browser cookies. Automatic tries Firefox first. A selected browser is tried first, then the others.")
     if cookie_choice != saved_browser:
         with db:
             db.execute("""INSERT INTO preferences(key,value) VALUES('youtube_cookie_browser',?)
@@ -366,12 +367,32 @@ with measure_tab:
                 st.altair_chart(usage_visuals.daily_bars(
                     model_tokens, {"total_tokens": "Tokens"}, title="Tokens",
                     colors=["#7dd3fc"]), width="stretch")
+        st.markdown("#### Usage by task step")
+        step_usage = usage_visuals.step_totals(usage)
         left, right = st.columns(2)
         with left:
-            step_totals = usage.groupby("purpose", as_index=False)["total_tokens"].sum()
             st.altair_chart(usage_visuals.category_bars(
-                step_totals, "purpose", "total_tokens", title="Tokens by task step"),
+                step_usage, "task_step", "tokens", title="API tokens by task step"),
                 width="stretch")
+        with right:
+            st.altair_chart(usage_visuals.category_bars(
+                step_usage, "task_step", "cost_high_usd",
+                title="Estimated peak USD by task step", color="#fb923c", money=True),
+                width="stretch")
+        st.dataframe(step_usage.rename(columns={
+            "task_step": "Step", "calls": "AI calls", "input_tokens": "Input tokens",
+            "output_tokens": "Output tokens", "tokens": "Total tokens",
+            "cost_low_usd": "Off-peak USD", "cost_high_usd": "Peak USD",
+        }), hide_index=True)
+        st.caption("Local OCR and ASR use no DeepSeek API tokens. AI steps include "
+                   "photo identification, matching, translation, frame reading, "
+                   "summary notes, final summary, and classification.")
+        left, right = st.columns(2)
+        with left:
+            calls_by_step = step_usage[step_usage["calls"] > 0]
+            st.altair_chart(usage_visuals.category_bars(
+                calls_by_step, "task_step", "calls", title="AI calls by task step",
+                color="#3b82f6"), width="stretch")
         with right:
             classified = usage.assign(category=usage["category"].fillna("Unclassified"))
             category_totals = classified.groupby("category", as_index=False)["total_tokens"].sum()
@@ -391,6 +412,24 @@ with measure_tab:
             st.dataframe(per_video[["title", "category", "models", "calls", "tokens",
                                      "cost_low_usd", "cost_high_usd",
                                      "first_call", "last_call"]], hide_index=True)
+        st.markdown("#### Each video or finding task by step")
+        usage["task"] = usage["title"].fillna(
+            usage["finding_task_id"].map(lambda value: "Finding " + str(value)[:8]
+                                          if value else "Unassigned"))
+        task_steps = (usage.assign(calls=1).groupby(
+            ["task", "task_step", "response_model"], dropna=False, as_index=False)
+            .agg(calls=("calls", "sum"), input_tokens=("prompt_tokens", "sum"),
+                 output_tokens=("completion_tokens", "sum"),
+                 tokens=("total_tokens", "sum"),
+                 cost_low_usd=("estimated_cost_low_usd", "sum"),
+                 cost_high_usd=("estimated_cost_high_usd", "sum")))
+        st.dataframe(task_steps.rename(columns={
+            "task": "Video or finding task", "task_step": "Step",
+            "response_model": "Model", "calls": "AI calls",
+            "input_tokens": "Input tokens", "output_tokens": "Output tokens",
+            "tokens": "Total tokens", "cost_low_usd": "Off-peak USD",
+            "cost_high_usd": "Peak USD",
+        }), hide_index=True)
         with st.expander("Individual AI calls"):
             usage["video_or_task"] = usage["title"].fillna(
                 usage["finding_task_id"].fillna("—"))
