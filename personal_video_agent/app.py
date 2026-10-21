@@ -238,10 +238,31 @@ with process_tab:
     processing_panel()
 
 with library_tab:
-    videos = [dict(row) for row in db.execute("SELECT * FROM videos ORDER BY created_at DESC")]
+    videos = [dict(row) for row in db.execute("SELECT * FROM videos")]
     if not videos:
         st.info("Completed videos will appear here.")
     else:
+        counts = {}
+        for item in videos:
+            category = item["category"] or ""
+            counts[category] = counts.get(category, 0) + 1
+        types = ["__all__"] + sorted(counts, key=presentation.category_label)
+        type_col, date_col, order_col = st.columns(3)
+        selected_type = type_col.selectbox(
+            "Video type", types,
+            format_func=lambda category: (
+                f"All types ({len(videos)})" if category == "__all__" else
+                f"{presentation.category_label(category)} ({counts[category]})"))
+        date_field = date_col.selectbox(
+            "Sort date", ["published_at", "created_at"],
+            format_func=lambda field: ("Video date" if field == "published_at"
+                                       else "Date added"))
+        order = order_col.selectbox("Order", ["Latest first", "Oldest first"])
+        if selected_type != "__all__":
+            videos = [item for item in videos
+                      if (item["category"] or "") == selected_type]
+        videos = presentation.order_library(
+            videos, date_field=date_field, newest_first=order == "Latest first")
         options = {f"{item['title']} · {item['status']} · {item['id'][:6]}": item["id"]
                    for item in videos}
         chosen_label = st.selectbox("Video", list(options), index=next(
@@ -251,7 +272,7 @@ with library_tab:
         video = store.detail(db, video_id)
         st.subheader(video["title"])
         st.write(f"{video['author']} · {video['published_at'] or 'Date unknown'} · "
-                 f"{video['category'] or 'Unclassified'}")
+                 f"{presentation.category_label(video['category'])}")
         st.link_button("Open original video", video["url"])
         if video["source_photo"] and Path(video["source_photo"]).is_file():
             with st.expander("Source photo"):

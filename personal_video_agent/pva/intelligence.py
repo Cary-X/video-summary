@@ -18,7 +18,8 @@ from . import store
 from .media import same_language
 
 
-CATEGORIES = ("finance", "sports", "technology", "policy", "science", "health",
+CATEGORIES = ("technology", "medicine", "finance", "politics", "religion",
+              "music", "lifestyle", "sports", "health", "policy", "science",
               "education", "culture", "business", "other")
 LANGUAGE_NAMES = {"en": "English", "zh-Hans": "简体中文", "zh-Hant": "繁體中文",
                   "es": "Español", "yue": "粵語（香港繁體中文口語）"}
@@ -317,7 +318,12 @@ def summarize(segments: list[dict], frames: list[dict], *, target_language: str,
 
 def classify(summary: str) -> str:
     result = _json(chat([
-        {"role": "system", "content": "Classify the supplied summary into exactly one category. Return JSON {\"category\":string}. Allowed: " + ", ".join(CATEGORIES)},
+        {"role": "system", "content": (
+            "Classify the supplied summary into exactly one category. Return JSON "
+            "{\"category\":string}. Allowed: " + ", ".join(CATEGORIES) + ". "
+            "Use medicine for diagnosis or treatment, health for wellness or "
+            "general health, politics for elections or political actors, and "
+            "policy for government rules or programs. Choose the dominant topic.")},
         {"role": "user", "content": summary},
     ], purpose="classification"))
     category = str(result.get("category", "")).casefold().strip()

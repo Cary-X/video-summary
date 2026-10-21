@@ -353,6 +353,33 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(presentation.clean_summary(raw),
                          "**Why it matters**\nFrom 639 a year to 0.")
 
+    def test_library_filters_have_readable_categories_and_date_order(self):
+        self.assertEqual(presentation.category_label("technology"), "Tech")
+        self.assertEqual(presentation.category_label("medicine"), "Medical")
+        self.assertEqual(presentation.category_label("politics"), "Politics")
+        videos = [
+            {"id": "a", "title": "A", "published_at": "20261001",
+             "created_at": "2026-10-21T03:00:00+00:00"},
+            {"id": "b", "title": "B", "published_at": "2026-10-03 12:30:00",
+             "created_at": "2026-10-21T01:00:00+00:00"},
+            {"id": "c", "title": "C", "published_at": "",
+             "created_at": "2026-10-21T02:00:00+00:00"},
+        ]
+        ids = lambda rows: [row["id"] for row in rows]
+        self.assertEqual(ids(presentation.order_library(
+            videos, date_field="published_at", newest_first=True)), ["b", "a", "c"])
+        self.assertEqual(ids(presentation.order_library(
+            videos, date_field="published_at", newest_first=False)), ["a", "b", "c"])
+        self.assertEqual(ids(presentation.order_library(
+            videos, date_field="created_at", newest_first=True)), ["a", "c", "b"])
+        self.assertEqual(ids(presentation.order_library(
+            videos, date_field="created_at", newest_first=False)), ["b", "c", "a"])
+
+    def test_classifier_accepts_new_video_types(self):
+        with patch("pva.intelligence.chat", return_value='{"category":"medicine"}'):
+            self.assertEqual(intelligence.classify("A clinical treatment study."),
+                             "medicine")
+
     def test_skipping_one_card_keeps_other_video_available(self):
         left = tasks.enqueue_find(self.db, "card", "photo.jpg",
                                   card={"title": "Left"})
