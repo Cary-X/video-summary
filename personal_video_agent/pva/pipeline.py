@@ -10,6 +10,10 @@ from pathlib import Path
 from . import intelligence, media, store
 
 
+class ProcessingCancelled(Exception):
+    """The user removed this task; do not turn cancellation into a failure."""
+
+
 def _visual_cues(rows: list[dict], max_frames: int = 8) -> list[dict]:
     """Spread screenshots across a video instead of sampling repeated captions."""
     candidates = [row for row in rows if media.VISUAL_CUE.search(
@@ -44,10 +48,10 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
     movie: Path | None = None
 
     def stage(name: str, detail: str, fraction: float) -> None:
-        with db:
-            store.event(db, video_id, name, detail)
         if on_progress:
             on_progress(name, fraction, detail)
+        with db:
+            store.event(db, video_id, name, detail)
 
     try:
         with db:
@@ -103,10 +107,15 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
                     movie = media.download_video(video["url"], scratch / "visual",
                                                  cookie_browser=cookie_browser,
                                                  purpose="visual")
+            except ProcessingCancelled:
+                raise
             except Exception as exc:
                 stage("visual warning", f"Screenshots skipped: {exc}", 0.78)
             if movie is not None:
                 for index, row in enumerate(cues):
+                    if on_progress:
+                        on_progress("visual", 0.66 + 0.12 * index / len(cues),
+                                    f"Inspecting frame {index + 1}/{len(cues)}")
                     try:
                         image_path = asset_dir / "frames" / video_id / f"{row['seq']:05d}.jpg"
                         media.capture_frame(movie, (row["start"] + row["end"]) / 2, image_path)
@@ -118,6 +127,8 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
                         frames.append({"id": cursor.lastrowid, "segment_id": row["id"],
                                        "at_seconds": row["start"], "image_path": str(image_path),
                                        "extracted_text": extracted})
+                    except ProcessingCancelled:
+                        raise
                     except Exception as exc:
                         stage("visual warning", f"Frame at {row['start']:.0f}s skipped: {exc}",
                               0.66 + 0.12 * (index + 1) / len(cues))
@@ -136,10 +147,14 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
                 f"Summary call {done}/{total}") if on_progress else None))
         stage("classification", "Categorizing from the summary", 0.97)
         category = intelligence.classify(summary)
+        if on_progress:
+            on_progress("saving", 0.99, "Saving summary and evidence")
         store.save_result(db, video_id, summary, category, claims)
         if on_progress:
             on_progress("ready", 1.0, "Summary and evidence saved")
         return store.detail(db, video_id)
+    except ProcessingCancelled:
+        raise
     except Exception as exc:
         with db:
             db.execute("UPDATE videos SET status='failed',error=? WHERE id=?", (str(exc), video_id))
@@ -149,7 +164,8 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def resummarize(db: sqlite3.Connection, video_id: str, *, skill_file: Path) -> dict:
+def resummarize(db: sqlite3.Connection, video_id: str, *, skill_file: Path,
+                on_progress: Callable[[str, float, str], None] | None = None) -> dict:
     video = store.detail(db, video_id)
     if not video["segments"]:
         raise ValueError("No stored transcript exists for this video")
@@ -158,8 +174,15 @@ def resummarize(db: sqlite3.Connection, video_id: str, *, skill_file: Path) -> d
     feedback_rows = [dict(x) for x in db.execute("SELECT * FROM feedback ORDER BY id")]
     summary, claims = intelligence.summarize(
         video["segments"], video["frames"], target_language=video["target_language"],
-        skill_text=skill_file.read_text(encoding="utf-8"), feedback=feedback_rows)
+        skill_text=skill_file.read_text(encoding="utf-8"), feedback=feedback_rows,
+        on_progress=(lambda done, total: on_progress(
+            "summary", 0.85 + 0.12 * done / total, f"Summary call {done}/{total}"))
+            if on_progress else None)
+    if on_progress:
+        on_progress("classification", 0.98, "Categorizing from the summary")
     category = intelligence.classify(summary)
+    if on_progress:
+        on_progress("saving", 0.99, "Saving summary and evidence")
     store.save_result(db, video_id, summary, category, claims)
     return store.detail(db, video_id)
 
@@ -183,6 +206,9 @@ def repair_visuals(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         movie = media.download_video(video["url"], scratch, cookie_browser=cookie_browser,
                                      purpose="visual")
         for index, row in enumerate(cues):
+            if on_progress:
+                on_progress("visual", 0.1 + 0.7 * index / len(cues),
+                            f"Inspecting frame {index + 1}/{len(cues)}")
             image_path = asset_dir / "frames" / video_id / f"{row['seq']:05d}.jpg"
             try:
                 media.capture_frame(movie, (row["start"] + row["end"]) / 2, image_path)
@@ -192,6 +218,8 @@ def repair_visuals(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
                       (video_id,segment_id,at_seconds,image_path,extracted_text)
                       VALUES (?,?,?,?,?)""", (video_id, row["id"], row["start"],
                                            str(image_path), extracted))
+            except ProcessingCancelled:
+                raise
             except Exception as exc:
                 with db:
                     store.event(db, video_id, "visual warning",
@@ -201,7 +229,7 @@ def repair_visuals(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
                             f"Inspected frame {index + 1}/{len(cues)}")
         if on_progress:
             on_progress("summary", 0.85, "Refreshing summary with visual evidence")
-        result = resummarize(db, video_id, skill_file=skill_file)
+        result = resummarize(db, video_id, skill_file=skill_file, on_progress=on_progress)
         if on_progress:
             on_progress("ready", 1.0, "Screenshots and summary updated")
         return result

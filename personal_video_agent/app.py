@@ -203,6 +203,7 @@ def processing_panel() -> None:
     try:
         rows = [dict(row) for row in connection.execute("""
           SELECT p.*,v.title FROM processing_tasks p JOIN videos v ON v.id=p.video_id
+          WHERE p.status!='skipped'
           ORDER BY p.created_at DESC,p.id DESC""")]
         if not rows:
             st.info("Processing is empty. Choose a found video and click Process.")
@@ -212,6 +213,10 @@ def processing_panel() -> None:
                 st.subheader(row["title"], anchor=False)
                 st.caption(f"{row['status']} · {row['stage']}")
                 st.progress(float(row["progress"]), text=row["stage"])
+                if st.button("Delete from Processing", key=f"delete-process-{row['id']}",
+                             help="Remove this task and cancel remaining steps after the current operation finishes. Completed Library summaries are kept."):
+                    tasks.skip_processing(connection, row["id"])
+                    st.rerun()
                 latest = connection.execute("""SELECT detail FROM task_events
                   WHERE task_type='processing' AND task_id=? ORDER BY id DESC LIMIT 1""",
                   (row["id"],)).fetchone()
@@ -238,7 +243,7 @@ with process_tab:
     processing_panel()
 
 with library_tab:
-    videos = [dict(row) for row in db.execute("SELECT * FROM videos")]
+    videos = [dict(row) for row in db.execute("SELECT * FROM videos WHERE status!='cancelled'")]
     if not videos:
         st.info("Completed videos will appear here.")
     else:
@@ -278,25 +283,7 @@ with library_tab:
             with st.expander("Source photo"):
                 st.image(video["source_photo"])
         if video["status"] == "ready":
-            st.markdown(presentation.clean_summary(video["summary"] or ""))
-            with st.expander("Claims and evidence"):
-                segments_by_id = {s["id"]: s for s in video["segments"]}
-                frames_by_id = {f["id"]: f for f in video["frames"]}
-                for claim in video["claims"]:
-                    st.markdown("- " + claim["text"])
-                    matched = []
-                    for ref in claim["evidence"]:
-                        kind, _, number = ref.partition(":")
-                        if kind == "s" and number.isdigit() and int(number) in segments_by_id:
-                            matched.append(segments_by_id[int(number)])
-                        elif kind == "f" and number.isdigit() and int(number) in frames_by_id:
-                            frame = frames_by_id[int(number)]
-                            st.caption(f"Frame {presentation.timestamp(frame['at_seconds'])}: "
-                                       f"{frame['extracted_text']}")
-                    for group in presentation.merge_transcript(matched):
-                        st.caption("Transcript " +
-                                   f"{presentation.timestamp(group['start'])}–"
-                                   f"{presentation.timestamp(group['end'])}: {group['text']}")
+            st.html(presentation.summary_html(video, font_size=sizes[size_choice]))
             with st.expander("Full transcript"):
                 for group in presentation.merge_transcript(video["segments"]):
                     st.write(f"{presentation.timestamp(group['start'])}–"

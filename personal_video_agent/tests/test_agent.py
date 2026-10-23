@@ -380,6 +380,93 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(intelligence.classify("A clinical treatment study."),
                              "medicine")
 
+    def test_summary_currency_and_point_sources_are_safe_html(self):
+        point = "Hosting costs $1,300 a year; email costs $2,000 a year or $10 a month."
+        result = presentation.summary_html({
+            "summary": point + "\n\n**Key points**\n- An unrelated point.",
+            "claims": [{"text": point, "evidence": ["s:1", "s:2", "f:3"]}],
+            "segments": [{"id": 1, "start": 1, "end": 4, "text": "Costs $1,300."},
+                         {"id": 2, "start": 4, "end": 9, "text": "<script>alert(1)</script>"}],
+            "frames": [{"id": 3, "at_seconds": 6, "extracted_text": "Chart: $10/month"}]})
+        self.assertIn(point, result)
+        self.assertEqual(result.count('<details class="pva-source">'), 1)
+        self.assertIn("Transcript 00:00:01–00:00:09", result)
+        self.assertIn("Visual 00:00:06", result)
+        self.assertIn("&lt;script&gt;", result)
+        self.assertNotIn("<script>", result)
+        self.assertIn("position:absolute", result)
+
+    def test_local_audio_decoder_accepts_installed_pyav(self):
+        import wave
+        from faster_whisper.audio import decode_audio
+        path = self.root / "silence.wav"
+        with wave.open(str(path), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16000)
+            audio.writeframes(b"\0\0" * 1600)
+        self.assertEqual(len(decode_audio(str(path))), 1600)
+
+    def test_delete_processing_preserves_completed_summary_and_cannot_revive(self):
+        task_id = tasks.enqueue_processing_video(self.db, self.video_id)
+        tasks.skip_processing(self.db, task_id)
+        tasks._update(self.db, "processing_tasks", task_id, status="ready",
+                      stage="complete", progress=1)
+        self.assertEqual(self.db.execute("SELECT status FROM processing_tasks WHERE id=?",
+                                        (task_id,)).fetchone()[0], "skipped")
+        self.assertEqual(store.detail(self.db, self.video_id)["status"], "cancelled")
+        with self.assertRaises(pipeline.ProcessingCancelled):
+            tasks._check_processing(self.db, task_id)
+        store.save_result(self.db, self.video_id, "Saved summary", "other", [])
+        completed = tasks.enqueue_processing_video(self.db, self.video_id)
+        tasks.skip_processing(self.db, completed)
+        self.assertEqual(store.detail(self.db, self.video_id)["status"], "ready")
+        self.assertEqual(store.detail(self.db, self.video_id)["summary"], "Saved summary")
+
+    def test_cancel_during_metadata_stops_before_captions_and_cleans_scratch(self):
+        task_id = tasks.enqueue_processing_video(self.db, self.video_id)
+
+        def metadata(*args, **kwargs):
+            tasks.skip_processing(self.db, task_id)
+            return {"title": "Example", "author": "A", "published_at": "",
+                    "duration": 10, "raw": {}}
+
+        with patch.object(media, "metadata", side_effect=metadata), \
+             patch.object(media, "captions") as captions:
+            with self.assertRaises(pipeline.ProcessingCancelled):
+                pipeline.process(self.db, self.video_id, asset_dir=self.root,
+                                 skill_file=self.skill,
+                                 on_progress=lambda *args: tasks._check_processing(self.db, task_id))
+        captions.assert_not_called()
+        self.assertEqual(store.detail(self.db, self.video_id)["status"], "cancelled")
+        self.assertEqual(list(self.root.glob("ingest-*")), [])
+
+    def test_cancelled_worker_late_failure_stays_removed(self):
+        task_id = tasks.enqueue_processing_video(self.db, self.video_id)
+        self.db.close()
+        manager = tasks.TaskManager(self.root / "personal.db", self.root, self.skill)
+
+        def work(db, video_id, **kwargs):
+            tasks.skip_processing(db, task_id)
+            # A library can fail while its operation is still in flight.
+            with db:
+                db.execute("UPDATE videos SET status='failed',error='late error' WHERE id=?",
+                           (video_id,))
+            raise RuntimeError("late error")
+
+        try:
+            with patch("pva.tasks.pipeline.process", side_effect=work):
+                manager._process(task_id)
+            check = store.connect(self.root / "personal.db")
+            self.assertEqual(check.execute("SELECT status FROM processing_tasks WHERE id=?",
+                                           (task_id,)).fetchone()[0], "skipped")
+            self.assertEqual(store.detail(check, self.video_id)["status"], "cancelled")
+            check.close()
+        finally:
+            manager.find_pool.shutdown(wait=True)
+            manager.process_pool.shutdown(wait=True)
+            self.db = store.connect(self.root / "personal.db")
+
     def test_skipping_one_card_keeps_other_video_available(self):
         left = tasks.enqueue_find(self.db, "card", "photo.jpg",
                                   card={"title": "Left"})

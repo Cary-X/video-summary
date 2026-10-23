@@ -21,7 +21,7 @@ def _update(db: sqlite3.Connection, table: str, task_id: str, *, status: str,
             stage: str, progress: float, detail: str = "", error: str | None = None) -> None:
     kind = "finding" if table == "finding_tasks" else "processing"
     with db:
-        active_only = " AND status!='skipped'" if table == "finding_tasks" else ""
+        active_only = " AND status!='skipped'"
         updated = db.execute(f"""UPDATE {table}
           SET status=?,stage=?,progress=?,error=?,updated_at=?
           WHERE id=?{active_only}""",
@@ -54,6 +54,28 @@ def skip_finding(db: sqlite3.Connection, task_id: str) -> None:
 def _is_skipped(db: sqlite3.Connection, task_id: str) -> bool:
     row = db.execute("SELECT status FROM finding_tasks WHERE id=?", (task_id,)).fetchone()
     return row is None or row["status"] == "skipped"
+
+
+def skip_processing(db: sqlite3.Connection, task_id: str) -> None:
+    """Hide the task and stop its worker at the next processing checkpoint."""
+    with db:
+        row = db.execute("SELECT * FROM processing_tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        db.execute("""UPDATE processing_tasks SET status='skipped',stage='cancelled',
+          error=NULL,updated_at=? WHERE id=?""", (store.now(), task_id))
+        _task_event(db, "processing", task_id, "cancelled", "Removed from Processing")
+        other = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
+          AND id!=? AND status IN ('queued','running')""", (row["video_id"], task_id)).fetchone()
+        if not other:
+            db.execute("""UPDATE videos SET status='cancelled',stage='cancelled',error=NULL
+              WHERE id=? AND status!='ready'""", (row["video_id"],))
+
+
+def _check_processing(db: sqlite3.Connection, task_id: str) -> None:
+    row = db.execute("SELECT status FROM processing_tasks WHERE id=?", (task_id,)).fetchone()
+    if row is None or row["status"] == "skipped":
+        raise pipeline.ProcessingCancelled("Removed from Processing")
 
 
 def enqueue_find(db: sqlite3.Connection, kind: str, source: str,
@@ -237,9 +259,11 @@ class TaskManager:
     def _process(self, task_id: str) -> None:
         db = store.connect(self.db_path)
         try:
+            _check_processing(db, task_id)
             row = db.execute("SELECT * FROM processing_tasks WHERE id=?", (task_id,)).fetchone()
 
             def report(stage: str, fraction: float, detail: str) -> None:
+                _check_processing(db, task_id)
                 _update(db, "processing_tasks", task_id, status="running", stage=stage,
                         progress=fraction, detail=detail)
 
@@ -255,10 +279,23 @@ class TaskManager:
                                      on_progress=report)
             _update(db, "processing_tasks", task_id, status="ready", stage="complete",
                     progress=1, detail="Video summary is ready in Library")
+        except pipeline.ProcessingCancelled:
+            pass
         except Exception as exc:
             _update(db, "processing_tasks", task_id, status="failed", stage="failed",
                     progress=1, detail=str(exc), error=str(exc))
         finally:
+            # An in-flight operation can return or fail after the user deletes it.
+            # Keep that late result from putting an unfinished video back in Library.
+            row = db.execute("SELECT video_id,status FROM processing_tasks WHERE id=?",
+                             (task_id,)).fetchone()
+            if row is not None and row["status"] == "skipped":
+                with db:
+                    db.execute("""UPDATE videos SET status='cancelled',stage='cancelled',error=NULL
+                      WHERE id=? AND status!='ready' AND NOT EXISTS (
+                        SELECT 1 FROM processing_tasks WHERE video_id=?
+                        AND id!=? AND status IN ('queued','running'))""",
+                      (row["video_id"], row["video_id"], task_id))
             db.close()
             self._done(task_id, finding=False)
 

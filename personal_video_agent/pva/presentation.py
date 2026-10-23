@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from html import escape
+
+from markdown_it import MarkdownIt
 
 
 _EVIDENCE_SUFFIX = re.compile(r"\s*\((?:(?:s|f):\d+(?:,\s*)?)+\)\s*$")
@@ -51,6 +54,70 @@ def clean_summary(summary: str) -> str:
     """Hide internal citations and stray code-style backticks in reader text."""
     return "\n".join(_EVIDENCE_SUFFIX.sub("", line).replace("`", "")
                      for line in summary.splitlines())
+
+
+def summary_html(video: dict, *, font_size: int = 16) -> str:
+    """Render ordinary currency and point-level sources outside the reading flow."""
+    markdown = MarkdownIt("commonmark", {"html": False, "linkify": False})
+    segments = {f"s:{row['id']}": row for row in video.get("segments", [])}
+    frames = {f"f:{row['id']}": row for row in video.get("frames", [])}
+
+    def normalized(text: str) -> str:
+        return re.sub(r"\s+", " ", clean_summary(text).strip().lstrip("- ")
+                      .replace("*", "").replace("_", "")).strip()
+
+    claims: dict[str, list[str]] = {}
+    for claim in video.get("claims", []):
+        claims.setdefault(normalized(claim["text"]), []).extend(claim["evidence"])
+    parts = []
+    for raw in (video.get("summary") or "").splitlines():
+        if not raw.strip():
+            continue
+        line = clean_summary(raw).strip()
+        refs = list(dict.fromkeys(claims.get(normalized(line), [])))
+        # Older summaries may carry citations directly instead of matching claims.
+        suffix = _EVIDENCE_SUFFIX.search(raw)
+        if suffix:
+            refs += [ref for ref in re.findall(r"[sf]:\d+", suffix.group()) if ref not in refs]
+        source_parts = []
+        matched = [segments[ref] for ref in refs if ref in segments]
+        for group in merge_transcript(matched):
+            span = f"{timestamp(group['start'])}–{timestamp(group['end'])}"
+            source_parts.append(f'<p><strong>Transcript {span}</strong><br>{escape(group["text"])}</p>')
+        for ref in refs:
+            if ref in frames:
+                frame = frames[ref]
+                source_parts.append(f'<p><strong>Visual {timestamp(frame["at_seconds"])}</strong>'
+                                    f'<br>{escape(frame["extracted_text"])}</p>')
+        bullet = line.startswith("- ")
+        body = markdown.render(line[2:] if bullet else line)
+        marker = ""
+        if source_parts:
+            marker = ('<details class="pva-source"><summary aria-label="Show supporting sources" '
+                      'title="Show supporting sources">Δ</summary>'
+                      '<div class="pva-source-panel"><strong>Supporting sources</strong>'
+                      '<span class="pva-source-hint">Click Δ again to close</span>' +
+                      "".join(source_parts) + '</div></details>')
+        parts.append('<div class="pva-point">' + ('<span aria-hidden="true">• </span>' if bullet else '') +
+                     '<div class="pva-copy">' + body + '</div>' + marker + '</div>')
+    return f"""<style>
+.pva-summary {{ font-size:{int(font_size)}px; line-height:1.6; }}
+.pva-point {{ position:relative; margin:0 0 .85em; }}
+.pva-copy, .pva-copy > p {{ display:inline; margin:0; font-size:inherit; }}
+.pva-source {{ display:inline; margin-left:.35em; }}
+.pva-source > summary {{ display:inline; list-style:none; cursor:pointer; color:#168bba;
+  font-size:.78em; font-weight:700; padding:.05em .3em; border-radius:4px; }}
+.pva-source > summary::-webkit-details-marker {{ display:none; }}
+.pva-source > summary:hover, .pva-source[open] > summary {{ background:rgba(22,139,186,.15); }}
+.pva-point:has(.pva-source[open]) {{ z-index:20; }}
+.pva-source-panel {{ position:absolute; top:100%; left:0; z-index:21; box-sizing:border-box;
+  width:min(680px,100%); max-height:320px; overflow:auto; padding:16px 18px;
+  background:var(--background-color,#fff); color:var(--text-color,#222);
+  border:1px solid #8ca9b5; border-radius:8px; box-shadow:0 8px 28px #0003;
+  font-size:.9em; line-height:1.5; }}
+.pva-source-panel p {{ margin:.8em 0 0; font-size:inherit !important; }}
+.pva-source-hint {{ display:block; font-size:.8em; opacity:.65; margin-top:3px; }}
+</style><div class="pva-summary">{"".join(parts)}</div>"""
 
 
 def timestamp(seconds: float) -> str:

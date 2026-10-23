@@ -3,6 +3,9 @@ pandas>=2.0
 altair>=5.0
 yt-dlp>=2024.1
 faster-whisper>=1.1
+# Faster Whisper 1.2.x passes metadata_errors, removed by PyAV 19.
+av>=11,<19
+markdown-it-py>=3.0
 Pillow>=10
 rapidocr>=3.10
 onnxruntime>=1.17
