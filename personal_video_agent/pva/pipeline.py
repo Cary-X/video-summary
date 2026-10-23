@@ -74,7 +74,9 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
             movie = media.download_video(video["url"], scratch / "audio",
                                          cookie_browser=cookie_browser, purpose="asr")
             stage("asr", "Transcribing audio locally", 0.30)
-            segments, language = media.transcribe(movie)
+            segments, language = media.transcribe(
+                movie, on_progress=(lambda fraction, detail: on_progress(
+                    "asr", 0.30 + 0.14 * fraction, detail)) if on_progress else None)
             transcript_source = "asr"
             movie = None  # Audio-only media cannot supply screenshots.
         store.replace_segments(db, video_id, segments)

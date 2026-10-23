@@ -5,11 +5,14 @@ import threading
 import time
 import unittest
 import json
+import os
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from pva import intelligence, media, pipeline, presentation, store, tasks, usage_visuals
+from pva import asr_worker, intelligence, media, pipeline, presentation, store, tasks, usage_visuals
 
 
 class AgentTests(unittest.TestCase):
@@ -417,6 +420,39 @@ class AgentTests(unittest.TestCase):
             audio.setframerate(16000)
             audio.writeframes(b"\0\0" * 1600)
         self.assertEqual(len(decode_audio(str(path))), 1600)
+
+    @unittest.skipUnless(os.name == "nt", "Windows CUDA runtime check")
+    def test_asr_does_not_select_gpu_when_cublas_is_missing(self):
+        with patch("ctranslate2.get_cuda_device_count", return_value=1), \
+             patch("pva.asr_worker.ctypes.WinDLL", side_effect=OSError("missing DLL")):
+            device, reason = asr_worker.select_device()
+        self.assertEqual(device, "cpu")
+        self.assertIn("runtime incomplete", reason)
+
+    def test_asr_stall_and_cancellation_terminate_the_worker(self):
+        real_popen = subprocess.Popen
+        children = []
+
+        def spawn(command, **kwargs):
+            child = real_popen([sys.executable, "-u", "-c",
+                "import time; print('{\"progress\":0.1,\"detail\":\"test encode\"}',flush=True); time.sleep(60)"], **kwargs)
+            children.append(child)
+            return child
+
+        with patch("pva.media.subprocess.Popen", side_effect=spawn):
+            with self.assertRaisesRegex(RuntimeError, "ASR stalled"):
+                media.transcribe(self.root / "audio.wav", stall_timeout=0.01)
+            self.assertIsNotNone(children[-1].poll())
+
+            def cancel(fraction, detail):
+                if fraction > 0:
+                    raise pipeline.ProcessingCancelled("User removed task")
+
+            with self.assertRaises(pipeline.ProcessingCancelled):
+                media.transcribe(self.root / "audio.wav", on_progress=cancel)
+            self.assertIsNotNone(children[-1].poll())
+        self.assertTrue(media._asr_lock.acquire(blocking=False))
+        media._asr_lock.release()
 
     def test_evidence_fragment_expands_to_full_source_sentence(self):
         rows = [

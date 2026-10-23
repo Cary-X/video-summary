@@ -2,11 +2,20 @@
 from __future__ import annotations
 
 import re
+import json
+import queue
 import shutil
 import subprocess
+import sys
+import tempfile
+import threading
+import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
+
+
+_asr_lock = threading.Lock()
 
 
 VISUAL_CUE = re.compile(
@@ -244,18 +253,73 @@ def download_video(url: str, directory: Path, *, cookie_browser: str = "",
     return max(files, key=lambda p: p.stat().st_size)
 
 
-def transcribe(video: Path) -> tuple[list[dict], str]:
+def transcribe(video: Path, *, on_progress=None,
+               stall_timeout: float = 180) -> tuple[list[dict], str]:
+    """Serialize local ASR, with cancellation, progress, and a bounded stall wait."""
+    def report(fraction: float, detail: str) -> None:
+        if on_progress:
+            on_progress(fraction, detail)
+
+    while not _asr_lock.acquire(timeout=1):
+        report(0, "Waiting for the other local ASR task")
+    process = None
     try:
-        from faster_whisper import WhisperModel
-    except ImportError as exc:
-        raise RuntimeError("Captions were unavailable; install faster-whisper for local ASR") from exc
-    model = WhisperModel("small", device="auto", compute_type="int8")
-    pieces, info = model.transcribe(str(video), vad_filter=True)
-    rows = [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
-            for s in pieces if s.text.strip()]
-    if not rows:
-        raise RuntimeError("ASR returned no speech")
-    return rows, info.language or "unknown"
+        report(0, "Starting local ASR worker")
+        messages = queue.Queue()
+        with tempfile.TemporaryFile() as errors:
+            process = subprocess.Popen(
+                [sys.executable, "-u", "-m", "pva.asr_worker", str(video.resolve())],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=errors, text=True, encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+            def read_messages():
+                try:
+                    for line in process.stdout:
+                        messages.put(line)
+                finally:
+                    messages.put(None)
+
+            reader = threading.Thread(target=read_messages, daemon=True)
+            reader.start()
+            last_progress = time.monotonic()
+            fraction, detail = 0, "Starting ASR"
+            while True:
+                try:
+                    raw = messages.get(timeout=2)
+                except queue.Empty:
+                    elapsed = time.monotonic() - last_progress
+                    if elapsed > stall_timeout:
+                        raise RuntimeError(f"ASR stalled for {stall_timeout:.0f}s during: {detail}. Retry processing.")
+                    report(fraction, f"{detail} · waiting {elapsed:.0f}s")
+                    continue
+                if raw is None:
+                    errors.seek(0)
+                    raise RuntimeError("ASR worker stopped: " + errors.read().decode("utf-8", "replace")[-1000:])
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if "error" in message:
+                    raise RuntimeError(message["error"])
+                if "result" in message:
+                    result = message["result"]
+                    report(1, "Local transcript complete")
+                    return result["segments"], result["language"]
+                fraction, detail = message["progress"], message["detail"]
+                last_progress = time.monotonic()
+                report(fraction, detail)
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            process.stdout.close()
+        _asr_lock.release()
 
 
 def capture_frame(video: Path, at_seconds: float, output: Path) -> Path:
