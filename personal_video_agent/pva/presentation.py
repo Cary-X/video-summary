@@ -81,22 +81,23 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
             refs += [ref for ref in re.findall(r"[sf]:\d+", suffix.group()) if ref not in refs]
         source_parts = []
         matched = [segments[ref] for ref in refs if ref in segments]
+        matched_frames = [frames[ref] for ref in refs if ref in frames]
+        starts = [row["start"] for row in matched] + [row["at_seconds"] for row in matched_frames]
+        ends = [row["end"] for row in matched] + [row["at_seconds"] for row in matched_frames]
+        span = f"{timestamp(min(starts))}–{timestamp(max(ends))}" if starts else ""
         for group in merge_transcript(matched):
-            span = f"{timestamp(group['start'])}–{timestamp(group['end'])}"
-            source_parts.append(f'<p><strong>Transcript {span}</strong><br>{escape(group["text"])}</p>')
-        for ref in refs:
-            if ref in frames:
-                frame = frames[ref]
-                source_parts.append(f'<p><strong>Visual {timestamp(frame["at_seconds"])}</strong>'
-                                    f'<br>{escape(frame["extracted_text"])}</p>')
+            source_parts.append(f'<p>{escape(group["text"])}</p>')
+        for frame in matched_frames:
+            source_parts.append('<p><strong>Visual evidence</strong>'
+                                f'<br>{escape(frame["extracted_text"])}</p>')
         bullet = line.startswith("- ")
         body = markdown.render(line[2:] if bullet else line)
         marker = ""
         if source_parts:
             marker = ('<details class="pva-source"><summary aria-label="Show supporting sources" '
                       'title="Show supporting sources">Δ</summary>'
-                      '<div class="pva-source-panel"><strong>Supporting sources</strong>'
-                      '<span class="pva-source-hint">Click Δ again to close</span>' +
+                      f'<div class="pva-source-panel"><strong>Supporting sources · {span}</strong>'
+                      '<span class="pva-source-hint">Drag the bottom-right corner to resize · Click Δ to close</span>' +
                       "".join(source_parts) + '</div></details>')
         parts.append('<div class="pva-point">' + ('<span aria-hidden="true">• </span>' if bullet else '') +
                      '<div class="pva-copy">' + body + '</div>' + marker + '</div>')
@@ -109,11 +110,13 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
   font-size:.78em; font-weight:700; padding:.05em .3em; border-radius:4px; }}
 .pva-source > summary::-webkit-details-marker {{ display:none; }}
 .pva-source > summary:hover, .pva-source[open] > summary {{ background:rgba(22,139,186,.15); }}
-.pva-point:has(.pva-source[open]) {{ z-index:20; }}
-.pva-source-panel {{ position:absolute; top:100%; left:0; z-index:21; box-sizing:border-box;
-  width:min(680px,100%); max-height:320px; overflow:auto; padding:16px 18px;
-  background:var(--background-color,#fff); color:var(--text-color,#222);
-  border:1px solid #8ca9b5; border-radius:8px; box-shadow:0 8px 28px #0003;
+.pva-source:focus-within > .pva-source-panel {{ z-index:110; }}
+.pva-source-panel {{ position:absolute; top:100%; left:0; z-index:100; box-sizing:border-box;
+  width:min(680px,100%); height:320px; resize:both; overflow:auto; padding:16px 18px 24px;
+  min-width:min(280px,100%); max-width:min(960px,100%);
+  min-height:140px; max-height:min(640px,75vh);
+  background:#fff !important; color:#222 !important; opacity:1 !important;
+  border:1px solid #647783; border-radius:8px; box-shadow:0 8px 28px #0003;
   font-size:.9em; line-height:1.5; }}
 .pva-source-panel p {{ margin:.8em 0 0; font-size:inherit !important; }}
 .pva-source-hint {{ display:block; font-size:.8em; opacity:.65; margin-top:3px; }}

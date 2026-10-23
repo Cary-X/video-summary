@@ -386,15 +386,26 @@ class AgentTests(unittest.TestCase):
             "summary": point + "\n\n**Key points**\n- An unrelated point.",
             "claims": [{"text": point, "evidence": ["s:1", "s:2", "f:3"]}],
             "segments": [{"id": 1, "start": 1, "end": 4, "text": "Costs $1,300."},
-                         {"id": 2, "start": 4, "end": 9, "text": "<script>alert(1)</script>"}],
+                         {"id": 2, "start": 620, "end": 625, "text": "<script>alert(1)</script>"}],
             "frames": [{"id": 3, "at_seconds": 6, "extracted_text": "Chart: $10/month"}]})
         self.assertIn(point, result)
         self.assertEqual(result.count('<details class="pva-source">'), 1)
-        self.assertIn("Transcript 00:00:01–00:00:09", result)
-        self.assertIn("Visual 00:00:06", result)
+        self.assertIn("Supporting sources · 00:00:01–00:10:25", result)
+        self.assertNotIn("00:00:04", result)
+        self.assertNotIn("00:10:20", result)
+        self.assertNotIn("00:00:06", result)
+        self.assertIn("Visual evidence", result)
         self.assertIn("&lt;script&gt;", result)
         self.assertNotIn("<script>", result)
         self.assertIn("position:absolute", result)
+        self.assertIn("background:#fff !important", result)
+        self.assertIn(":focus-within", result)
+        self.assertIn("resize:both", result)
+        self.assertIn("min-width:min(280px,100%)", result)
+        self.assertIn("max-width:min(960px,100%)", result)
+        self.assertIn("min-height:140px", result)
+        self.assertIn("max-height:min(640px,75vh)", result)
+        self.assertNotIn(".pva-point:has", result)
 
     def test_local_audio_decoder_accepts_installed_pyav(self):
         import wave
