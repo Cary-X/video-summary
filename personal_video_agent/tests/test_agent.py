@@ -454,6 +454,47 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(media._asr_lock.acquire(blocking=False))
         media._asr_lock.release()
 
+    def test_gpu_failure_restarts_once_on_cpu_and_returns_only_cpu_result(self):
+        real_popen = subprocess.Popen
+        commands = []
+
+        def spawn(command, **kwargs):
+            commands.append(command)
+            if "--cpu" in command:
+                message = {"result": {"segments": [{"start": 0, "end": 1,
+                            "text": "Complete CPU transcript."}], "language": "en"}}
+                script = "print(" + repr(json.dumps(message)) + ",flush=True)"
+            else:
+                script = ("print('{\"progress\":0.02,\"detail\":\"GPU\",\"device\":\"cuda\"}',flush=True);"
+                          "print('{\"error\":\"GPU encoding failed\"}',flush=True)")
+            return real_popen([sys.executable, "-u", "-c", script], **kwargs)
+
+        updates = []
+        with patch("pva.media.subprocess.Popen", side_effect=spawn):
+            rows, language = media.transcribe(self.root / "audio.wav",
+                on_progress=lambda fraction, detail: updates.append(detail))
+        self.assertEqual(rows[0]["text"], "Complete CPU transcript.")
+        self.assertEqual(language, "en")
+        self.assertEqual(len(commands), 2)
+        self.assertNotIn("--cpu", commands[0])
+        self.assertIn("--cpu", commands[1])
+        self.assertTrue(any("entire transcript on CPU" in x for x in updates))
+
+    def test_forced_cpu_worker_never_checks_or_selects_gpu(self):
+        import numpy as np
+        from types import SimpleNamespace
+        model = MagicMock()
+        model.transcribe.return_value = (iter([SimpleNamespace(start=0, end=1, text="A fact.")]),
+                                         SimpleNamespace(language="en"))
+        with patch("pva.asr_worker.select_device", side_effect=AssertionError("GPU checked")), \
+             patch("faster_whisper.WhisperModel", return_value=model) as constructor, \
+             patch("faster_whisper.audio.decode_audio", return_value=np.zeros(16000)), \
+             patch("pva.asr_worker.emit"):
+            asr_worker.run("sample.wav", force_cpu=True)
+        self.assertEqual(constructor.call_count, 1)
+        self.assertEqual(constructor.call_args.kwargs["device"], "cpu")
+        self.assertEqual(constructor.call_args.kwargs["compute_type"], "int8")
+
     def test_evidence_fragment_expands_to_full_source_sentence(self):
         rows = [
             {"id": 1, "start": 1, "end": 3, "text": "I was paying $1,300 just to"},

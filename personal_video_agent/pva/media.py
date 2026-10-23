@@ -18,6 +18,10 @@ from urllib.parse import urlparse
 _asr_lock = threading.Lock()
 
 
+class _GpuAsrError(RuntimeError):
+    """The GPU attempt failed; discard its partial output and restart on CPU."""
+
+
 VISUAL_CUE = re.compile(
     r"\b(chart|graph|figure|diagram|slide|screen|picture|image|table|flowchart|"
     r"look at|as you can see|shown here)\b|图表|图中|画面|表格|流程图|如图|幻灯片",
@@ -262,13 +266,31 @@ def transcribe(video: Path, *, on_progress=None,
 
     while not _asr_lock.acquire(timeout=1):
         report(0, "Waiting for the other local ASR task")
+    try:
+        try:
+            return _transcribe_worker(video, report, stall_timeout=stall_timeout)
+        except _GpuAsrError:
+            report(0, "GPU ASR failed; restarting the entire transcript on CPU INT8")
+            return _transcribe_worker(video, report, stall_timeout=stall_timeout, force_cpu=True)
+    finally:
+        _asr_lock.release()
+
+
+def _transcribe_worker(video: Path, report, *, stall_timeout: float,
+                       force_cpu: bool = False) -> tuple[list[dict], str]:
     process = None
+    backend = "cpu" if force_cpu else None
+
+    def failure(message: str):
+        return (_GpuAsrError if backend == "cuda" else RuntimeError)(message)
+
     try:
         report(0, "Starting local ASR worker")
         messages = queue.Queue()
         with tempfile.TemporaryFile() as errors:
             process = subprocess.Popen(
-                [sys.executable, "-u", "-m", "pva.asr_worker", str(video.resolve())],
+                [sys.executable, "-u", "-m", "pva.asr_worker", str(video.resolve())] +
+                (["--cpu"] if force_cpu else []),
                 cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
                 stderr=errors, text=True, encoding="utf-8", errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -290,22 +312,23 @@ def transcribe(video: Path, *, on_progress=None,
                 except queue.Empty:
                     elapsed = time.monotonic() - last_progress
                     if elapsed > stall_timeout:
-                        raise RuntimeError(f"ASR stalled for {stall_timeout:.0f}s during: {detail}. Retry processing.")
-                    report(fraction, f"{detail} · waiting {elapsed:.0f}s")
+                        raise failure(f"ASR stalled for {stall_timeout:.0f}s during: {detail}. Retry processing.")
+                    report(fraction, detail)
                     continue
                 if raw is None:
                     errors.seek(0)
-                    raise RuntimeError("ASR worker stopped: " + errors.read().decode("utf-8", "replace")[-1000:])
+                    raise failure("ASR worker stopped: " + errors.read().decode("utf-8", "replace")[-1000:])
                 try:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
                 if "error" in message:
-                    raise RuntimeError(message["error"])
+                    raise failure(message["error"])
                 if "result" in message:
                     result = message["result"]
                     report(1, "Local transcript complete")
                     return result["segments"], result["language"]
+                backend = message.get("device", backend)
                 fraction, detail = message["progress"], message["detail"]
                 last_progress = time.monotonic()
                 report(fraction, detail)
@@ -319,7 +342,6 @@ def transcribe(video: Path, *, on_progress=None,
                     process.kill()
                     process.wait(timeout=5)
             process.stdout.close()
-        _asr_lock.release()
 
 
 def capture_frame(video: Path, at_seconds: float, output: Path) -> Path:

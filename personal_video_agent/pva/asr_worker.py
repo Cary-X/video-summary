@@ -29,13 +29,14 @@ def emit(**message) -> None:
     print(json.dumps(message, ensure_ascii=True), flush=True)
 
 
-def run(path: str) -> None:
+def run(path: str, *, force_cpu: bool = False) -> None:
     from faster_whisper import WhisperModel
     from faster_whisper.audio import decode_audio
     from huggingface_hub.errors import LocalEntryNotFoundError
 
-    device, reason = select_device()
-    emit(progress=0.02, detail=reason)
+    device, reason = (("cpu", "Using CPU INT8 for this entire transcript")
+                      if force_cpu else select_device())
+    emit(progress=0.02, detail=reason, device=device)
     emit(progress=0.04, detail=f"Decoding audio · {device.upper()}")
     audio = decode_audio(path)
     duration = len(audio) / 16000
@@ -63,7 +64,7 @@ def run(path: str) -> None:
 
 if __name__ == "__main__":
     try:
-        run(sys.argv[1])
+        run(sys.argv[1], force_cpu="--cpu" in sys.argv[2:])
     except Exception as exc:
         emit(error=f"{type(exc).__name__}: {exc}")
         raise SystemExit(1)
