@@ -418,6 +418,40 @@ class AgentTests(unittest.TestCase):
             audio.writeframes(b"\0\0" * 1600)
         self.assertEqual(len(decode_audio(str(path))), 1600)
 
+    def test_evidence_fragment_expands_to_full_source_sentence(self):
+        rows = [
+            {"id": 1, "start": 1, "end": 3, "text": "I was paying $1,300 just to"},
+            {"id": 2, "start": 3, "end": 6,
+             "text": "I was paying $1,300 just to keep my websites online. Now"},
+            {"id": 3, "start": 6, "end": 9,
+             "text": "keep my websites online. Now hosting costs $1 a month."},
+            {"id": 4, "start": 9, "end": 12, "text": "This is a different topic."}]
+        sentences = presentation.transcript_sentences(rows)
+        result = presentation.source_passages(sentences, ["s:1"])
+        self.assertEqual(result[0]["text"],
+                         "I was paying $1,300 just to keep my websites online.")
+        self.assertEqual(result[0]["end"], 9)
+        # A middle caption includes both sentences; neither ends mid-thought.
+        middle = presentation.source_passages(sentences, ["s:2"])
+        self.assertEqual(middle[0]["text"],
+                         "I was paying $1,300 just to keep my websites online. "
+                         "Now hosting costs $1 a month.")
+        self.assertNotIn("different topic", middle[0]["text"])
+
+    def test_separate_evidence_excerpts_do_not_merge_unrelated_speech(self):
+        rows = [{"id": 1, "start": 1, "end": 3, "text": "First fact."},
+                {"id": 2, "start": 3, "end": 6, "text": "Unrelated statement."},
+                {"id": 3, "start": 6, "end": 9, "text": "Second fact."}]
+        result = presentation.source_passages(presentation.transcript_sentences(rows),
+                                               ["s:1", "s:3"])
+        self.assertEqual([x["text"] for x in result], ["First fact.", "Second fact."])
+
+    def test_chinese_sliding_captions_form_whole_sentences(self):
+        rows = [{"id": 1, "start": 1, "end": 3, "text": "这个治疗可以"},
+                {"id": 2, "start": 3, "end": 6, "text": "治疗可以改善疼痛。下一句话。"}]
+        result = presentation.source_passages(presentation.transcript_sentences(rows), ["s:1"])
+        self.assertEqual(result[0]["text"], "这个治疗可以改善疼痛。")
+
     def test_delete_processing_preserves_completed_summary_and_cannot_revive(self):
         task_id = tasks.enqueue_processing_video(self.db, self.video_id)
         tasks.skip_processing(self.db, task_id)

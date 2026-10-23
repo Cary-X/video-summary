@@ -59,8 +59,8 @@ def clean_summary(summary: str) -> str:
 def summary_html(video: dict, *, font_size: int = 16) -> str:
     """Render ordinary currency and point-level sources outside the reading flow."""
     markdown = MarkdownIt("commonmark", {"html": False, "linkify": False})
-    segments = {f"s:{row['id']}": row for row in video.get("segments", [])}
     frames = {f"f:{row['id']}": row for row in video.get("frames", [])}
+    sentences = transcript_sentences(video.get("segments", []))
 
     def normalized(text: str) -> str:
         return re.sub(r"\s+", " ", clean_summary(text).strip().lstrip("- ")
@@ -80,12 +80,12 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
         if suffix:
             refs += [ref for ref in re.findall(r"[sf]:\d+", suffix.group()) if ref not in refs]
         source_parts = []
-        matched = [segments[ref] for ref in refs if ref in segments]
+        matched = source_passages(sentences, refs)
         matched_frames = [frames[ref] for ref in refs if ref in frames]
         starts = [row["start"] for row in matched] + [row["at_seconds"] for row in matched_frames]
         ends = [row["end"] for row in matched] + [row["at_seconds"] for row in matched_frames]
         span = f"{timestamp(min(starts))}–{timestamp(max(ends))}" if starts else ""
-        for group in merge_transcript(matched):
+        for group in matched:
             source_parts.append(f'<p>{escape(group["text"])}</p>')
         for frame in matched_frames:
             source_parts.append('<p><strong>Visual evidence</strong>'
@@ -142,6 +142,76 @@ def _append_without_overlap(current: str, incoming: str) -> str:
             overlap = count
             break
     return " ".join(existing + new[overlap:]).strip()
+
+
+def transcript_sentences(rows: list[dict]) -> list[dict]:
+    """Rebuild source sentences before selecting evidence from sliding captions.
+
+    Each word retains its originating segment IDs. A cited caption fragment then
+    selects its whole sentence, including neighboring captions, without rewriting
+    speech or stitching together unrelated parts of the video.
+    """
+    sentences = []
+    words: list[dict] = []
+    previous_end = None
+
+    def flush() -> None:
+        sentence = []
+        for word in words:
+            sentence.append(word)
+            if re.search(r'''[.!?。！？]["'”’）)\]]*$''', word["text"]):
+                emit(sentence)
+                sentence = []
+        if sentence:
+            emit(sentence)
+        words.clear()
+
+    def emit(items: list[dict]) -> None:
+        text = " ".join(item["text"] for item in items)
+        text = re.sub(r"(?<=[\u3400-\u9fff。，！？、；：]) (?=[\u3400-\u9fff。，！？、；：])", "", text)
+        sentences.append({"text": text, "start": min(x["start"] for x in items),
+                          "end": max(x["end"] for x in items),
+                          "evidence": set().union(*(x["evidence"] for x in items))})
+
+    for row in sorted(rows, key=lambda x: (x["start"], x["end"])):
+        if previous_end is not None and row["start"] > previous_end + 1.5:
+            flush()
+        # Split CJK sentence endings as well as whitespace-delimited captions.
+        incoming = re.findall(r"[\u3400-\u9fff]|[^\s\u3400-\u9fff。！？]+|[。！？]",
+                              str(row.get("text") or ""))
+        overlap = 0
+        for count in range(min(len(words), len(incoming), 30), 0, -1):
+            if [(_word(x["text"]) or x["text"]) for x in words[-count:]] == [
+                    (_word(x) or x) for x in incoming[:count]]:
+                overlap = count
+                break
+        ref = f"s:{row['id']}"
+        if overlap:
+            for item in words[-overlap:]:
+                item["evidence"].add(ref)
+                item["end"] = max(item["end"], row["end"])
+        words.extend({"text": text, "start": row["start"], "end": row["end"],
+                      "evidence": {ref}} for text in incoming[overlap:])
+        previous_end = max(previous_end or row["end"], row["end"])
+    flush()
+    return sentences
+
+
+def source_passages(sentences: list[dict], refs: list[str]) -> list[dict]:
+    """Keep neighboring cited sentences together; preserve gaps between excerpts."""
+    passages = []
+    last_index = -2
+    for index, sentence in enumerate(sentences):
+        if not sentence["evidence"].intersection(refs):
+            continue
+        if (passages and index == last_index + 1 and
+                sentence["start"] <= passages[-1]["end"] + 1.5):
+            passages[-1]["text"] += " " + sentence["text"]
+            passages[-1]["end"] = max(passages[-1]["end"], sentence["end"])
+        else:
+            passages.append({key: sentence[key] for key in ("text", "start", "end")})
+        last_index = index
+    return passages
 
 
 def merge_transcript(rows: list[dict], *, max_span: float = 25.0) -> list[dict]:
