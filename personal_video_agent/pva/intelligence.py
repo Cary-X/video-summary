@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from collections.abc import Callable
 
-from . import store, visual
+from . import store, summary_router, visual
 from .media import same_language
 
 
@@ -25,6 +25,7 @@ LANGUAGE_NAMES = {"en": "English", "zh-Hans": "简体中文", "zh-Hant": "繁體
                   "es": "Español", "yue": "粵語（香港繁體中文口語）"}
 _usage_context: ContextVar[tuple[Path, str | None, str | None] | None] = ContextVar(
     "pva_usage_context", default=None)
+_local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 @contextmanager
@@ -152,13 +153,86 @@ def _load_env() -> None:
             os.environ.setdefault(key.strip(), value.strip().strip('"\''))
 
 
+def local_model() -> str:
+    _load_env()
+    return os.getenv("PVA_LOCAL_MODEL", "").strip() or "qwen3:1.7b"
+
+
+def _local_chat(messages: list[dict], purpose: str) -> str:
+    model = local_model()
+    limits = {"classification": 80, "summary notes": 480, "summary": 850, "translation": 2500}
+    string = {"type": "string"}
+    point = {"type": "object", "required": ["text", "evidence"], "additionalProperties": False,
+             "properties": {"text": string, "evidence": {"type": "array", "items": string,
+                                                         "maxItems": 4}}}
+    points = {"type": "array", "items": point, "maxItems": 4}
+    fields = {
+        "summary notes": {"notes": points},
+        "summary": {"takeaway": point, "importance": point,
+                    "key_points": points, "caveats": points},
+        "translation": {"items": {"type": "array", "items": {
+            "type": "object", "required": ["id", "text"], "properties": {
+                "id": {"type": "integer"}, "text": string}}}},
+        "classification": {"category": {"type": "string", "enum": list(CATEGORIES)}},
+    }[purpose]
+    required = ["takeaway", "key_points", "caveats"] if purpose == "summary" else list(fields)
+    schema = {"type": "object", "properties": fields, "required": required,
+              "additionalProperties": False}
+    payload = {"model": model, "messages": messages, "format": schema,
+               "stream": False, "think": False, "keep_alive": "3m",
+               "options": {"temperature": 0.1, "num_ctx": 8192,
+                           "num_predict": limits[purpose]}}
+    request = urllib.request.Request("http://127.0.0.1:11434/api/chat",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    try:
+        with _local_opener.open(request, timeout=240) as response:
+            output = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise RuntimeError(f"Local model unavailable. Run ollama pull {model}.") from exc
+        raise RuntimeError(f"Ollama HTTP {exc.code}: {exc.read(300).decode(errors='replace')}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Ollama could not finish with {model}. Check that Ollama is running locally: {exc}") from exc
+    _record_usage(purpose, f"Ollama · {model}", f"Ollama · {output.get('model') or model}",
+                  {"prompt_tokens": output.get("prompt_eval_count"),
+                   "completion_tokens": output.get("eval_count")})
+    content = output.get("message", {}).get("content")
+    if output.get("done_reason") == "length":
+        raise RuntimeError(f"Local {model} output reached its limit during {purpose}.")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError(f"Local {model} returned an empty answer during {purpose}.")
+    return content
+
+
 def chat(messages: list[dict], *, vision: bool = False, purpose: str = "other") -> str:
+    if purpose in {"summary notes", "summary", "translation", "classification"}:
+        if vision:
+            raise ValueError("The local text model accepts text only")
+        route = summary_router.current.get()
+        if route.backend == "api" and purpose in {"summary notes", "summary"}:
+            output = summary_router.complete(route, messages)
+            try:
+                choice = output["choices"][0]
+                content = choice["message"]["content"]
+            except (TypeError, KeyError, IndexError):
+                raise RuntimeError("The summary API did not return an OpenAI-compatible chat completion.") from None
+            if isinstance(output.get("usage"), dict):
+                _record_usage(purpose, route.model, str(output.get("model") or route.model), output["usage"])
+            if choice.get("finish_reason") == "length":
+                raise RuntimeError("The summary API ran out of output space. Try Batched or a model with a larger context.")
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError("The summary API returned an empty answer.")
+            return content
+        return _local_chat(messages, purpose)
+    if purpose not in {"photo identification", "match checking"}:
+        raise ValueError(f"Unsupported AI step: {purpose}")
     _load_env()
     base = os.getenv("PVA_LLM_BASE_URL") or os.getenv("LLM_BASE_URL") or ""
     key = os.getenv("PVA_LLM_API_KEY") or os.getenv("LLM_API_KEY") or ""
     host = urlparse(base).hostname or ""
     model = ("deepseek-flash" if host == "api.deepseek.com" else
-             ((os.getenv("PVA_VISION_MODEL") if vision else os.getenv("PVA_SUMMARY_MODEL")) or
+             ((os.getenv("PVA_VISION_MODEL") if vision else None) or
               os.getenv("PVA_LLM_MODEL") or os.getenv("LLM_MODEL") or ""))
     missing = [name for name, value in (
         ("PVA_LLM_BASE_URL", base), ("PVA_LLM_API_KEY", key),
@@ -178,20 +252,25 @@ def chat(messages: list[dict], *, vision: bool = False, purpose: str = "other") 
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"LLM HTTP {exc.code}: {exc.read(300).decode(errors='replace')}") from exc
     content = output["choices"][0]["message"]["content"]
+    if isinstance(output.get("usage"), dict):
+        _record_usage(purpose, model, str(output.get("model") or model), output["usage"])
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("The model returned an empty answer")
+    return content
+
+
+def _record_usage(purpose: str, model: str, response_model: str, usage: dict) -> None:
     context = _usage_context.get()
-    if context and isinstance(output.get("usage"), dict):
+    if context:
         db_path, video_id, finding_task_id = context
         usage_db = store.connect(db_path)
         try:
             store.record_ai_usage(
                 usage_db, video_id=video_id, finding_task_id=finding_task_id,
                 purpose=purpose, requested_model=model,
-                response_model=str(output.get("model") or model), usage=output["usage"])
+                response_model=response_model, usage=usage)
         finally:
             usage_db.close()
-    if not isinstance(content, str) or not content.strip():
-        raise RuntimeError("The model returned an empty answer")
-    return content
 
 
 def _json(raw: str) -> dict:
@@ -232,41 +311,17 @@ def read_frame(image: Path, *, on_progress=None, on_warning=None) -> str:
     _load_env()
     context = _usage_context.get()
     db_path, video_id, finding_task_id = context or (visual.ROOT / "data" / "personal.db", None, None)
-    settings_db = store.connect(db_path)
     try:
-        backend, api_fallback = visual.config(settings_db)
-    finally:
-        settings_db.close()
-    if backend == "paddleocr":
-        try:
-            result = visual.read(image, db_path=db_path, video_id=video_id,
-                                 finding_task_id=finding_task_id, on_progress=on_progress)
-        except RuntimeError as exc:
-            warning = f"Local visual reading failed: {exc}"
-            if on_warning:
-                on_warning(warning)
-            if not api_fallback:
-                ocr = local_ocr(image)
-                if ocr:
-                    return ("RapidOCR text only; chart structure and visual details are unverified.\n" + ocr)
-                raise
-        else:
-            return f"Local {result['model']} visual evidence:\n" + result["text"]
-    ocr = local_ocr(image)
-    try:
-        encoded = base64.b64encode(image.read_bytes()).decode("ascii")
-        result = _json(chat([
-            {"role": "system", "content": "Read this video frame. Describe only visible chart, table, diagram or slide information. Transcribe legible labels and numbers. State uncertainty. Return JSON with a 'text' string."},
-            {"role": "user", "content": [{"type": "text", "text": "Extract the visual evidence. Local OCR found: " + ocr},
-                                          {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + encoded}}]},
-        ], vision=True, purpose="frame reading"))
-        description = str(result.get("text") or "").strip()
-        if any(word in description.casefold() for word in ("unavailable", "unsupported", "cannot read")):
-            return ocr
-        return (f"OCR text: {ocr}\nVisual description: {description}" if ocr and description
-                else ocr or description)
-    except Exception:
-        return ocr
+        result = visual.read(image, db_path=db_path, video_id=video_id,
+                             finding_task_id=finding_task_id, on_progress=on_progress)
+    except RuntimeError as exc:
+        if on_warning:
+            on_warning(f"Local visual reading failed: {exc}")
+        ocr = local_ocr(image)
+        if ocr:
+            return "RapidOCR text only; chart structure and visual details are unverified.\n" + ocr
+        raise
+    return f"Local {result['model']} visual evidence:\n" + result["text"]
 
 
 def summarize(segments: list[dict], frames: list[dict], *, target_language: str,
@@ -274,33 +329,56 @@ def summarize(segments: list[dict], frames: list[dict], *, target_language: str,
               on_progress: Callable[[int, int], None] | None = None) -> tuple[str, list[dict]]:
     if not segments:
         raise ValueError("A summary requires transcript segments")
-    evidence_ids = {f"s:{s['id']}" for s in segments} | {
-        f"f:{f['id']}" for f in frames if f["extracted_text"]}
     rows = [{"id": f"s:{s['id']}", "start": s["start"],
              "text": s.get("translated_text") or s["text"]} for s in segments]
     rows += [{"id": f"f:{f['id']}", "start": f["at_seconds"],
               "text": f["extracted_text"]} for f in frames if f["extracted_text"]]
-    notes: list[dict] = []
-    total_calls = (len(rows) + 64) // 65 + 1
-    for start in range(0, len(rows), 65):
-        batch = rows[start:start + 65]
+
+    def extract_notes(batch: list[dict], allowed: set[str]) -> list[dict]:
         result = _json(chat([
-            {"role": "system", "content": "Extract factual notes from video evidence. Return JSON with notes: [{text, evidence:[id]}]. Every evidence id must be copied from the input. Include useful visual facts. Do not invent missing details."},
+            {"role": "system", "content": "Extract up to four brief factual notes from video evidence. Use one sentence per note. Return JSON with notes: [{text, evidence:[id]}]. Copy one or two evidence IDs per note from the input id or evidence fields. Include useful visual facts. Do not invent missing details."},
             {"role": "user", "content": json.dumps(batch, ensure_ascii=False)},
         ], purpose="summary notes"))
-        allowed = {r["id"] for r in batch}
-        for note in result.get("notes", []):
+        valid_notes = []
+        for note in result.get("notes", [])[:4]:
             ids = [x for x in note.get("evidence", []) if x in allowed]
             if ids and str(note.get("text", "")).strip():
-                notes.append({"text": str(note["text"]).strip(), "evidence": ids})
-        if on_progress:
-            on_progress(start // 65 + 1, total_calls)
-    if not notes:
-        raise ValueError("The model produced no evidence-backed notes")
+                valid_notes.append({"text": str(note["text"]).strip(), "evidence": ids})
+        return valid_notes
+
+    route = summary_router.current.get()
+    input_size = sum(len(row["text"]) for row in rows)
+    short_input = len(rows) <= 65 and input_size <= 6000
+    if route.method == "direct":
+        too_long = not short_input if route.backend == "local" else input_size > 60000 or len(rows) > 600
+        if too_long:
+            raise ValueError("This transcript is too long for single-pass summarization. Choose Auto or Batched.")
+    if route.method == "direct" or (route.method == "auto" and short_input):
+        summary_input = rows
+        evidence_ids = {row["id"] for row in rows}
+        total_calls = 1
+    else:
+        notes: list[dict] = []
+        total_calls = (len(rows) + 64) // 65 + 1
+        for start in range(0, len(rows), 65):
+            batch = rows[start:start + 65]
+            notes.extend(extract_notes(batch, {row["id"] for row in batch}))
+            if on_progress:
+                on_progress(start // 65 + 1, total_calls)
+        while len(notes) > 60:
+            condensed = []
+            for start in range(0, len(notes), 30):
+                batch = notes[start:start + 30]
+                condensed.extend(extract_notes(batch, {x for note in batch for x in note["evidence"]}))
+            notes = condensed
+        if not notes:
+            raise ValueError("The model produced no evidence-backed notes")
+        summary_input = notes
+        evidence_ids = {evidence_id for note in notes for evidence_id in note["evidence"]}
     recent_feedback = [x["note"] for x in feedback[-8:] if x.get("note")]
     result = _json(chat([
-        {"role": "system", "content": skill_text + "\nReturn JSON with takeaway ({text:string,evidence:[id]}), importance ({text:string,evidence:[id]}) when supported, key_points ([{text:string,evidence:[id]}]), caveats ([{text:string,evidence:[id]}]), and claims ([{text:string,evidence:[id]}]) for compatibility. Write in " + LANGUAGE_NAMES.get(target_language, target_language) + ". Every factual statement needs supplied evidence IDs, but put IDs only in the evidence arrays, never in text. User feedback: " + json.dumps(recent_feedback, ensure_ascii=False)},
-        {"role": "user", "content": json.dumps(notes, ensure_ascii=False)},
+        {"role": "system", "content": skill_text + "\nReturn compact JSON. Use one sentence for the takeaway, up to four short key points, and only material caveats. Each point is {text:string,evidence:[id]}. Write in " + LANGUAGE_NAMES.get(target_language, target_language) + ". Every factual statement needs supplied evidence IDs, but put IDs only in the evidence arrays, never in text. User feedback: " + json.dumps(recent_feedback, ensure_ascii=False)},
+        {"role": "user", "content": json.dumps(summary_input, ensure_ascii=False)},
     ], purpose="summary"))
 
     def valid(raw: object) -> dict | None:

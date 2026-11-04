@@ -40,19 +40,6 @@ def python_path() -> Path:
     return Path(os.getenv("PVA_PADDLE_PYTHON") or default)
 
 
-def config(db=None) -> tuple[str, bool]:
-    backend = os.getenv("PVA_FRAME_READER", "paddleocr")
-    fallback = os.getenv("PVA_VISUAL_API_FALLBACK", "false").casefold() in {"1", "true", "yes"}
-    if db is not None:
-        prefs = dict(db.execute("SELECT key,value FROM preferences WHERE key IN "
-                               "('frame_reader','visual_api_fallback')").fetchall())
-        backend = prefs.get("frame_reader", backend)
-        fallback = prefs.get("visual_api_fallback", str(fallback)).casefold() == "true"
-    if backend not in {"paddleocr", "deepseek"}:
-        raise ValueError("Frame reader must be paddleocr or deepseek")
-    return backend, fallback
-
-
 def read(image: Path, *, db_path: Path | None = None, video_id: str | None = None,
          finding_task_id: str | None = None, on_progress=None, timeout: float = 600,
          purpose: str = "frame reading") -> dict:

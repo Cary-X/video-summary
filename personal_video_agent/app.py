@@ -1,6 +1,7 @@
 """Local Streamlit interface. Run: python -m streamlit run app.py --server.headless true"""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
@@ -9,13 +10,15 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image
 
-from pva import intelligence, media, pipeline, presentation, store, tasks, usage_visuals, visual
+from pva import intelligence, media, pipeline, presentation, store, tasks, usage_visuals
+from pva.summary_router import SummaryRoute
 
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 DB = DATA / "personal.db"
 SKILL = ROOT / "summary-skill" / "SKILL.md"
+ASSETS = ROOT / "assets"
 
 
 def photo_region(path: str, bbox: list | None):
@@ -28,90 +31,155 @@ def photo_region(path: str, bbox: list | None):
                        int(right * width / 1000), int(bottom * height / 1000)))
 
 
-st.set_page_config(page_title="Personal Video Agent", layout="wide")
-st.title("Personal Video Agent")
-st.caption("Private video library with separate finding and processing tasks")
+@st.cache_data
+def artwork(name: str) -> str:
+    return "data:image/webp;base64," + base64.b64encode((ASSETS / name).read_bytes()).decode("ascii")
+
+
+st.set_page_config(page_title="Raccoon Agent", page_icon=str(ASSETS / "raccoon-logo.webp"),
+                   layout="wide")
 db = store.connect(DB)
 manager = tasks.get_manager(DB, DATA, SKILL)
+manager.pump()
+prefs = dict(db.execute("SELECT key,value FROM preferences"))
+languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Hant",
+             "Español": "es", "粵語": "yue"}
+sizes = {"Standard": 16, "Large": 20, "Extra large": 24}
+methods = {"auto": "Automatic", "direct": "Quick · single pass", "batched": "Detailed · batched"}
+backends = {"local": "Local Ollama", "api": "Custom API"}
+size_choice = prefs.get("reading_size", "Standard")
+if size_choice not in sizes:
+    size_choice = "Standard"
+target_language = prefs.get("summary_language", "en")
+summary_route = SummaryRoute(
+    backend=prefs.get("summary_backend", "local"), method=prefs.get("summary_method", "auto"),
+    base_url=prefs.get("summary_base_url", ""), model=prefs.get("summary_model", ""),
+)
 
-with st.sidebar:
-    st.header("Preferences")
-    intelligence._load_env()
-    saved_reader, saved_fallback = visual.config(db)
-    with st.expander("Pictures and charts"):
-        frame_reader = st.selectbox("Read video screenshots with", ["paddleocr", "deepseek"],
-            index=["paddleocr", "deepseek"].index(saved_reader),
-            format_func=lambda value: ("Local PaddleOCR-VL 1.6" if value == "paddleocr"
-                                       else "DeepSeek Flash API"))
-        visual_fallback = st.checkbox("Allow DeepSeek if local reading fails",
-                                      value=saved_fallback, disabled=frame_reader != "paddleocr")
-        st.caption("Local chart and text reading uses no API tokens. CPU inference may take longer. "
-                   "Photo identification, matching and summaries still use DeepSeek Flash.")
-    if frame_reader != saved_reader or visual_fallback != saved_fallback:
-        with db:
-            db.executemany("""INSERT INTO preferences(key,value) VALUES (?,?)
-              ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-              [("frame_reader", frame_reader), ("visual_api_fallback", str(visual_fallback).lower())])
-    languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Hant",
-                 "Español": "es", "粵語": "yue"}
-    saved_language_row = db.execute(
-        "SELECT value FROM preferences WHERE key='summary_language'").fetchone()
-    saved_language = saved_language_row["value"] if saved_language_row else "en"
-    with st.expander("Summary language (optional)"):
-        language_choice = st.selectbox(
-            "Write summaries in", list(languages),
-            index=next((i for i, code in enumerate(languages.values())
-                        if code == saved_language), 0))
-    target_language = languages[language_choice]
-    if target_language != saved_language:
-        with db:
-            db.execute("""INSERT INTO preferences(key,value) VALUES('summary_language',?)
-              ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (target_language,))
+
+def save_preferences(values: dict[str, str]) -> None:
+    with db:
+        db.executemany("""INSERT INTO preferences(key,value) VALUES(?,?)
+          ON CONFLICT(key) DO UPDATE SET value=excluded.value""", values.items())
+
+
+def queue_summary(action, *args, **kwargs) -> bool:
+    try:
+        action(*args, summary_route=summary_route, **kwargs)
+    except ValueError as exc:
+        st.error(str(exc))
+        return False
+    manager.pump()
+    return True
+
+
+def navigate(page: str, message: str = "") -> None:
+    st.session_state["raccoon_next_page"] = page
+    if message:
+        st.session_state["raccoon_message"] = message
+    st.rerun()
+
+
+st.html(ASSETS / "raccoon.css")
+st.html(f"""<style>
+.stApp [data-testid="stMarkdownContainer"] :is(p, li),
+.stApp [data-testid="stWidgetLabel"] p {{ font-size: {sizes[size_choice]}px; line-height: 1.5; }}
+</style>
+<header class="raccoon-brand">
+  <img src="{artwork('raccoon-logo.webp')}" alt="" width="68" height="68">
+  <h1>Raccoon Agent</h1>
+  <p>Turn video links and screenshots into summaries you can check.</p>
+</header>""")
+if next_page := st.session_state.pop("raccoon_next_page", None):
+    st.session_state["raccoon_nav"] = next_page
+page = st.radio("Main navigation", ["Add videos", "Agent activity", "Library", "Settings"],
+                horizontal=True, label_visibility="collapsed", key="raccoon_nav")
+if message := st.session_state.pop("raccoon_message", None):
+    st.success(message)
+
+
+def settings_page() -> None:
+    st.header("Settings", anchor=False)
+    st.subheader("Summary engine", anchor=False)
+    backend = st.radio("Where should summaries be written?", list(backends),
+                       index=list(backends).index(summary_route.backend), format_func=backends.get,
+                       horizontal=True)
+    with st.form("summary_settings", clear_on_submit=True):
+        method = st.selectbox("How should the agent summarize?", list(methods),
+                              index=list(methods).index(summary_route.method), format_func=methods.get)
+        st.caption("Automatic adapts to transcript length. Quick writes in one pass. "
+                   "Detailed collects evidence in batches before writing.")
+        base_url, model, api_key = "", "", ""
+        if backend == "api":
+            base_url = st.text_input("API base URL", value=summary_route.base_url,
+                                     placeholder="https://your-provider.example/v1",
+                                     help="Use the OpenAI-compatible base URL from your provider.")
+            model = st.text_input("API model name", value=summary_route.model,
+                                  placeholder="Enter your provider's model ID")
+            api_key = st.text_input("API key", type="password",
+                                    help="The key is held in memory. Enter it again after the app restarts.")
+            st.caption("The selected provider receives transcript excerpts and any extracted visual text "
+                       "needed to write the summary. Provider charges may apply.")
+        else:
+            st.caption(f"Uses {intelligence.local_model()} on this computer. Summary API cost is $0.")
+        if st.form_submit_button("Save summary settings", type="primary"):
+            try:
+                chosen = SummaryRoute(backend=backend, method=method, base_url=base_url,
+                                      model=model, api_key=api_key).register()
+                if backend == "local":
+                    chosen = {key: chosen[key] for key in ("backend", "method")}
+                save_preferences({f"summary_{key}": value for key, value in chosen.items()})
+                navigate("Settings", "Summary settings saved for new jobs.")
+            except ValueError as exc:
+                st.error(str(exc))
+    st.caption("Translation and classification use local Ollama. DeepSeek handles photo identification "
+               "and video match checks. Screenshot reading runs on this computer.")
+
+    st.subheader("Reading and YouTube", anchor=False)
     saved_browser = tasks.cookie_browser(db)
     browsers = ["auto", "firefox", "chrome", "edge", ""]
-    cookie_choice = st.selectbox(
-        "YouTube login browser", browsers,
-        index=browsers.index(saved_browser) if saved_browser in browsers else 0,
-        format_func=lambda value: ("Automatic (Firefox, Chrome, Edge)" if value == "auto"
-                                   else value.title() if value else "No browser cookies"),
-        help="On a YouTube sign-in challenge, try browser cookies. Automatic tries Firefox first. A selected browser is tried first, then the others.")
-    if cookie_choice != saved_browser:
-        with db:
-            db.execute("""INSERT INTO preferences(key,value) VALUES('youtube_cookie_browser',?)
-              ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (cookie_choice,))
-    sizes = {"Standard": 16, "Large": 20, "Extra large": 24}
-    saved_size_row = db.execute(
-        "SELECT value FROM preferences WHERE key='reading_size'").fetchone()
-    saved_size = saved_size_row["value"] if saved_size_row else "Standard"
-    size_choice = st.selectbox(
-        "Reading text size", list(sizes),
-        index=list(sizes).index(saved_size) if saved_size in sizes else 0)
-    if size_choice != saved_size:
-        with db:
-            db.execute("""INSERT INTO preferences(key,value) VALUES('reading_size',?)
-              ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (size_choice,))
-    metrics = pipeline.measures(db)
-    st.metric("Summarized videos", metrics["ready"])
-    st.caption(f"Local database: {DB}")
+    with st.form("reading_settings"):
+        language_choice = st.selectbox("Summary language", list(languages),
+            index=next((i for i, code in enumerate(languages.values()) if code == target_language), 0))
+        selected_size = st.selectbox("Reading text size", list(sizes), index=list(sizes).index(size_choice))
+        cookie_choice = st.selectbox("YouTube login browser", browsers,
+            index=browsers.index(saved_browser) if saved_browser in browsers else 0,
+            format_func=lambda value: ("Automatic (Firefox, Chrome, Edge)" if value == "auto"
+                                       else value.title() if value else "No browser cookies"),
+            help="If YouTube asks for sign-in, the app tries cookies from your selected browser first.")
+        if st.form_submit_button("Save reading and browser settings"):
+            save_preferences({"summary_language": languages[language_choice],
+                              "reading_size": selected_size, "youtube_cookie_browser": cookie_choice})
+            navigate("Settings", "Reading and browser settings saved.")
 
-st.markdown(f"""<style>
-.stApp p, .stApp li, .stApp label {{
-  font-size: {sizes[size_choice]}px !important;
-  line-height: 1.55 !important;
-}}
-</style>""", unsafe_allow_html=True)
+    st.subheader("Storage location", anchor=False)
+    st.write("Your library, uploads, and saved screenshots are stored in this folder.")
+    st.code(str(DATA), language=None)
+    st.caption(f"Library database · {DB.name}")
 
-add_tab, find_tab, process_tab, library_tab, measure_tab = st.tabs(
-    ["Add video", "Finding", "Processing", "Library", "Measure & learn"])
+if page == "Settings":
+    settings_page()
 
-with add_tab:
-    st.write("Paste links, upload photos, or do both. Find sends every input to the Finding area.")
-    with st.form("add_inputs", clear_on_submit=True):
+if page == "Add videos":
+    st.header("Add videos to summarize", anchor=False)
+    st.html("""<div class="raccoon-steps" aria-label="How it works">
+      <div><b>1</b><span>Add links or photos</span></div>
+      <div><b>2</b><span>Confirm and process</span></div>
+      <div><b>3</b><span>Read in Library</span></div>
+    </div>""")
+    intake, illustration = st.columns([1.55, 1], gap="medium")
+    with illustration:
+        st.html(f"""<aside class="raccoon-illustration">
+          <img src="{artwork('raccoon-tv.webp')}" alt="A cartoon raccoon watching a television">
+          <p>Send me a video. I’ll find what matters.</p>
+        </aside>""")
+    with intake.form("add_inputs", clear_on_submit=True):
         links = st.text_area("Video links (one per line)", height=125,
                              placeholder="https://www.youtube.com/watch?v=...")
         photos = st.file_uploader("Photos or screenshots", type=["jpg", "jpeg", "png"],
-                                  accept_multiple_files=True)
-        submitted = st.form_submit_button("Find", type="primary")
+                                  accept_multiple_files=True,
+                                  help="Upload several images at once. No title or author needed.")
+        submitted = st.form_submit_button("Find videos", type="primary")
     if submitted:
         queued, errors = 0, []
         for raw in dict.fromkeys(line.strip() for line in links.splitlines() if line.strip()):
@@ -132,8 +200,11 @@ with add_tab:
             except Exception as exc:
                 errors.append(f"{photo.name}: {exc}")
         manager.pump()
-        if queued:
-            st.success(f"Sent {queued} input(s) to Finding. The form is clear for more.")
+        if queued and not errors:
+            st.session_state["raccoon_activity_next"] = "Finding"
+            navigate("Agent activity", f"Sent {queued} input(s) to Finding. Confirm a match to start a summary.")
+        elif queued:
+            st.success(f"Sent {queued} input(s) to Finding in Agent activity.")
         elif not errors:
             st.info("Paste a link or upload a photo first.")
         for error in errors:
@@ -153,16 +224,19 @@ def finding_panel() -> None:
             sent = 0
             for row in ready:
                 candidates = json.loads(row["candidates_json"])
-                best = next((i for i, item in enumerate(candidates) if item.get("verified")), None)
+                best = next((i for i, item in enumerate(candidates) if item.get("verified") is True), None)
                 if best is None:
                     continue
-                tasks.enqueue_processing(connection, row["id"], best, target_language)
+                if not queue_summary(tasks.enqueue_processing, connection, row["id"], best, target_language):
+                    break
                 sent += 1
-            manager.pump()
             if sent:
-                st.rerun()
+                st.session_state["raccoon_activity_next"] = "Processing"
+                navigate("Agent activity", f"Sent {sent} video(s) to Processing.")
         if not rows:
-            st.info("Finding is empty. Add links or photos on the Add video page.")
+            st.info("No videos to confirm yet. Start by adding a link or photo.")
+            if st.button("Add links or photos", key="finding_add"):
+                navigate("Add videos")
             return
         for row in rows:
             card = json.loads(row["card_json"] or "{}")
@@ -195,7 +269,7 @@ def finding_panel() -> None:
                             st.warning("No verified original video found. Add a clearer photo or the original video link.")
                         choices = list(range(len(candidates))) + [None]
                         default = next((i for i, item in enumerate(candidates)
-                                        if item.get("verified")), len(candidates))
+                                        if item.get("verified") is True), len(candidates))
                         chosen = st.selectbox(
                             "Choose original video", choices, index=default,
                             format_func=lambda index, found=candidates: (
@@ -207,11 +281,11 @@ def finding_panel() -> None:
                             for item in candidates:
                                 st.write(f"{item['title']}: {item.get('reason','')}")
                         verified_choice = chosen is not None and candidates[chosen].get("verified") is True
-                        if st.button("Process", key=f"process-{row['id']}", disabled=not verified_choice,
+                        if st.button("Process video", key=f"process-{row['id']}", type="primary", disabled=not verified_choice,
                                      help="A verified original video is required before processing"):
-                            tasks.enqueue_processing(connection, row["id"], chosen, target_language)
-                            manager.pump()
-                            st.rerun()
+                            if queue_summary(tasks.enqueue_processing, connection, row["id"], chosen, target_language):
+                                st.session_state["raccoon_activity_next"] = "Processing"
+                                navigate("Agent activity", "Video sent to Processing.")
     finally:
         connection.close()
 
@@ -232,6 +306,9 @@ def processing_panel() -> None:
             with st.container(border=True):
                 st.subheader(row["title"], anchor=False)
                 st.caption(f"{row['status']} · {row['stage']}")
+                route = json.loads(row.get("summary_route_json") or "{}")
+                st.caption("Summary · " + backends.get(route.get("backend"), backends["local"]) +
+                           " · " + methods.get(route.get("method"), methods["auto"]))
                 st.progress(float(row["progress"]), text=row["stage"])
                 if st.button("Delete from Processing", key=f"delete-process-{row['id']}",
                              help="Remove this task and cancel remaining steps after the current operation finishes. Completed Library summaries are kept."):
@@ -252,17 +329,32 @@ def processing_panel() -> None:
                         st.rerun()
                 elif row["status"] == "ready":
                     st.success("Summary ready in Library")
+                    if st.button("Read summary", key=f"open-library-{row['id']}"):
+                        st.session_state["selected"] = row["video_id"]
+                        navigate("Library")
     finally:
         connection.close()
 
 
-with find_tab:
-    finding_panel()
+activity = None
+if page == "Agent activity":
+    st.header("Agent activity", anchor=False)
+    st.write("Confirm the original in Finding. Follow each video in Processing.")
+    if next_activity := st.session_state.pop("raccoon_activity_next", None):
+        st.session_state["raccoon_activity"] = next_activity
+    activity = st.radio("Activity view", ["Finding", "Processing", "Usage"],
+                        horizontal=True, label_visibility="collapsed", key="raccoon_activity")
+    if activity == "Finding":
+        st.caption(f"New summaries · {backends[summary_route.backend]} · {methods[summary_route.method]}")
+        if st.button("Change summary settings"):
+            navigate("Settings")
+        finding_panel()
+    elif activity == "Processing":
+        processing_panel()
 
-with process_tab:
-    processing_panel()
-
-with library_tab:
+if page == "Library":
+    st.header("Your library", anchor=False)
+    st.write("Read the main points and open the Δ bubbles to check the evidence.")
     videos = [dict(row) for row in db.execute("SELECT * FROM videos WHERE status!='cancelled'")]
     if not videos:
         st.info("Completed videos will appear here.")
@@ -324,10 +416,9 @@ with library_tab:
                 active_visual = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
                   AND status IN ('queued','running') LIMIT 1""", (video_id,)).fetchone()
                 if st.button("Reread saved screenshots", disabled=bool(active_visual),
-                             help="Uses the selected picture reader, then refreshes the summary with DeepSeek. Reuses saved screenshots and transcript."):
-                    tasks.enqueue_processing_video(db, video_id, mode="reread_visual")
-                    manager.pump()
-                    st.success("Saved screenshots sent to Processing")
+                             help="Reads saved screenshots locally and uses your chosen engine to refresh the summary."):
+                    if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="reread_visual"):
+                        st.success("Saved screenshots sent to Processing")
             with st.form("feedback"):
                 rating = st.slider("How useful was this summary?", 1, 5, 4)
                 note = st.text_input("What should improve next time?")
@@ -335,12 +426,9 @@ with library_tab:
                     pipeline.feedback(db, video_id, rating, note)
                     st.success("Feedback saved")
             if st.button("Refresh summary using latest feedback"):
-                try:
-                    with intelligence.usage_context(DB, video_id=video_id):
-                        pipeline.resummarize(db, video_id, skill_file=SKILL)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
+                if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="resummarize"):
+                    st.session_state["raccoon_activity_next"] = "Processing"
+                    navigate("Agent activity", "Summary refresh sent to Processing.")
             existing_frames = {frame["segment_id"] for frame in video["frames"]}
             missing_visuals = [row for row in pipeline._visual_cues(video["segments"])
                                if row["id"] not in existing_frames]
@@ -351,9 +439,8 @@ with library_tab:
               LIMIT 1""", (video_id,)).fetchone()
             if visual_gap and st.button("Retry missing screenshots",
                                         disabled=bool(active_repair)):
-                tasks.enqueue_processing_video(db, video_id, mode="repair_visual")
-                manager.pump()
-                st.success("Screenshot retry sent to Processing")
+                if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="repair_visual"):
+                    st.success("Screenshot retry sent to Processing")
         else:
             st.caption(f"Current stage: {video['stage']}")
             if video["error"]:
@@ -361,16 +448,16 @@ with library_tab:
             active = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
               AND status IN ('queued','running') LIMIT 1""", (video_id,)).fetchone()
             if not active and st.button("Queue this video for processing"):
-                tasks.enqueue_processing_video(db, video_id)
-                manager.pump()
-                st.rerun()
+                if queue_summary(tasks.enqueue_processing_video, db, video_id):
+                    st.session_state["raccoon_activity_next"] = "Processing"
+                    navigate("Agent activity", "Video sent to Processing.")
         with st.expander("Processing trace"):
             for step in video["events"]:
                 st.write(f"{step['at']} · {step['stage']} · {step['detail']}")
 
-with measure_tab:
+if page == "Agent activity" and activity == "Usage":
     st.subheader("AI token usage")
-    st.caption("Measured from API responses since usage tracking was enabled. "
+    st.caption("Measured from model responses since usage tracking was enabled. "
                "Earlier calls cannot be reconstructed from the video records.")
     period = st.selectbox("Period", ["7 days", "30 days", "All time"])
     since = None if period == "All time" else (
@@ -392,10 +479,9 @@ with measure_tab:
         b.metric("Total tokens", f"{total_tokens:,}")
         c.metric("Input / output", f"{int(usage['prompt_tokens'].sum()):,} / "
                  f"{int(usage['completion_tokens'].sum()):,}")
-        d.metric("Estimated cost range", f"${low:.6f} to ${high:.6f}")
-        st.caption("Cost range uses published DeepSeek Flash off-peak and peak rates; "
-                   "it is an estimate, not the provider's billed amount. "
-                   "Other models have no cost estimate.")
+        d.metric("Tracked cost estimate", f"${low:.6f} to ${high:.6f}")
+        st.caption("The estimate covers DeepSeek Flash. Local Ollama costs $0 in API fees. "
+                   "Custom summary API pricing is unavailable here; check your provider’s bill.")
         cost_daily = usage_visuals.complete_days(usage, [
             "estimated_cost_low_usd", "estimated_cost_high_usd"], period)
         st.altair_chart(usage_visuals.daily_bars(
@@ -429,7 +515,7 @@ with measure_tab:
         left, right = st.columns(2)
         with left:
             st.altair_chart(usage_visuals.category_bars(
-                step_usage, "task_step", "tokens", title="API tokens by task step"),
+                step_usage, "task_step", "tokens", title="Tokens by task step"),
                 width="stretch")
         with right:
             st.altair_chart(usage_visuals.category_bars(
@@ -441,9 +527,8 @@ with measure_tab:
             "output_tokens": "Output tokens", "tokens": "Total tokens",
             "cost_low_usd": "Off-peak USD", "cost_high_usd": "Peak USD",
         }), hide_index=True)
-        st.caption("Local OCR and ASR use no DeepSeek API tokens. AI steps include "
-                   "photo identification, matching, translation, frame reading, "
-                   "summary notes, final summary, and classification.")
+        st.caption("Token counts include local Ollama and provider usage. Summary steps use the engine "
+                   "chosen for each job. Earlier calls remain in the totals.")
         left, right = st.columns(2)
         with left:
             calls_by_step = step_usage[step_usage["calls"] > 0]
@@ -492,6 +577,6 @@ with measure_tab:
     else:
         st.caption("Local PaddleOCR-VL runs will show model, device, time, cache hits and failures here.")
     with st.expander("Library quality measures"):
-        st.json(metrics)
+        st.json(pipeline.measures(db))
 
 db.close()

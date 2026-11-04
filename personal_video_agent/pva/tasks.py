@@ -8,7 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import intelligence, media, pipeline, store
+from . import intelligence, media, pipeline, store, summary_router
 
 
 def _task_event(db: sqlite3.Connection, kind: str, task_id: str,
@@ -95,7 +95,8 @@ def enqueue_find(db: sqlite3.Connection, kind: str, source: str,
 
 
 def enqueue_processing(db: sqlite3.Connection, finding_task_id: str,
-                       candidate_index: int, target_language: str) -> str:
+                       candidate_index: int, target_language: str, *,
+                       summary_route: summary_router.SummaryRoute | None = None) -> str:
     row = db.execute("SELECT * FROM finding_tasks WHERE id=?", (finding_task_id,)).fetchone()
     if row is None or row["status"] != "ready":
         raise ValueError("The finding task is not ready to process")
@@ -105,6 +106,7 @@ def enqueue_processing(db: sqlite3.Connection, finding_task_id: str,
     chosen = candidates[candidate_index]
     if chosen.get("verified") is not True:
         raise ValueError("The original video has not been verified. Keep it in Finding until a reliable match is found.")
+    route_json = json.dumps((summary_route or summary_router.SummaryRoute()).register())
     card = json.loads(row["card_json"] or "{}")
     video_id = store.add_video(
         db, chosen["url"], title=chosen.get("title") or card.get("title") or "Untitled",
@@ -114,8 +116,9 @@ def enqueue_processing(db: sqlite3.Connection, finding_task_id: str,
     task_id = uuid.uuid4().hex
     with db:
         db.execute("""INSERT INTO processing_tasks
-          (id,video_id,finding_task_id,created_at,updated_at)
-          VALUES (?,?,?,?,?)""", (task_id, video_id, finding_task_id, store.now(), store.now()))
+          (id,video_id,finding_task_id,summary_route_json,created_at,updated_at)
+          VALUES (?,?,?,?,?,?)""", (task_id, video_id, finding_task_id, route_json,
+                                   store.now(), store.now()))
         db.execute("""UPDATE finding_tasks SET status='delivered',stage='delivered',
           progress=1,video_id=?,updated_at=? WHERE id=?""",
           (video_id, store.now(), finding_task_id))
@@ -125,16 +128,18 @@ def enqueue_processing(db: sqlite3.Connection, finding_task_id: str,
 
 
 def enqueue_processing_video(db: sqlite3.Connection, video_id: str,
-                             *, mode: str = "ingest") -> str:
+                             *, mode: str = "ingest",
+                             summary_route: summary_router.SummaryRoute | None = None) -> str:
     if db.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is None:
         raise KeyError(video_id)
-    if mode not in {"ingest", "repair_visual", "reread_visual"}:
+    if mode not in {"ingest", "repair_visual", "reread_visual", "resummarize"}:
         raise ValueError("Unsupported processing mode")
+    route_json = json.dumps((summary_route or summary_router.SummaryRoute()).register())
     task_id = uuid.uuid4().hex
     with db:
         db.execute("""INSERT INTO processing_tasks
-          (id,video_id,mode,created_at,updated_at) VALUES (?,?,?,?,?)""",
-          (task_id, video_id, mode, store.now(), store.now()))
+          (id,video_id,mode,summary_route_json,created_at,updated_at) VALUES (?,?,?,?,?,?)""",
+          (task_id, video_id, mode, route_json, store.now(), store.now()))
         _task_event(db, "processing", task_id, "queued", "Waiting to process the video")
     return task_id
 
@@ -269,8 +274,12 @@ class TaskManager:
                 _update(db, "processing_tasks", task_id, status="running", stage=stage,
                         progress=fraction, detail=detail)
 
-            with intelligence.usage_context(self.db_path, video_id=row["video_id"]):
-                if row["mode"] == "reread_visual":
+            route = summary_router.SummaryRoute(**json.loads(row["summary_route_json"]))
+            with summary_router.use(route), intelligence.usage_context(self.db_path, video_id=row["video_id"]):
+                if row["mode"] == "resummarize":
+                    report("summary", 0.1, "Writing a new summary from the saved transcript")
+                    pipeline.resummarize(db, row["video_id"], skill_file=self.skill_file, on_progress=report)
+                elif row["mode"] == "reread_visual":
                     pipeline.reread_visuals(db, row["video_id"], skill_file=self.skill_file,
                                            on_progress=report)
                 elif row["mode"] == "repair_visual":

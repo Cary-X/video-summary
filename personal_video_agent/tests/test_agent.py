@@ -117,13 +117,30 @@ class AgentTests(unittest.TestCase):
             with intelligence.usage_context(self.root / "personal.db",
                                             video_id=self.video_id):
                 self.assertEqual(intelligence.chat([{"role": "user", "content": "Hi"}],
-                                                   purpose="summary"), "done")
+                                                   purpose="match checking"), "done")
         body = json.loads(fetch.call_args.args[0].data)
         self.assertEqual(body["model"], "deepseek-flash")
         row = self.db.execute("SELECT * FROM ai_usage").fetchone()
         self.assertEqual((row["purpose"], row["total_tokens"], row["response_model"]),
-                         ("summary", 150, "deepseek-flash"))
+                         ("match checking", 150, "deepseek-flash"))
         self.assertGreater(row["estimated_cost_low_usd"], 0)
+
+    def test_text_tasks_use_local_ollama_and_record_zero_cost(self):
+        output = {"model": "qwen3:1.7b", "message": {"content": "{}"},
+                  "prompt_eval_count": 12, "eval_count": 3}
+        with patch.dict("os.environ", {"PVA_LOCAL_MODEL": "qwen3:1.7b"}), \
+             patch("pva.intelligence._local_opener.open",
+                   side_effect=lambda *a, **k: BytesIO(json.dumps(output).encode())) as fetch, \
+             intelligence.usage_context(self.root / "personal.db", video_id=self.video_id):
+            for purpose in ("summary notes", "summary", "translation", "classification"):
+                self.assertEqual(intelligence.chat([], purpose=purpose), "{}")
+        for call in fetch.call_args_list:
+            request = call.args[0]
+            self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/chat")
+            self.assertIsNone(request.get_header("Authorization"))
+            self.assertFalse(json.loads(request.data)["think"])
+        rows = self.db.execute("SELECT total_tokens,estimated_cost_high_usd FROM ai_usage").fetchall()
+        self.assertEqual([tuple(row) for row in rows], [(15, 0.0)] * 4)
 
     def test_usage_logging_can_write_while_video_list_is_open(self):
         listing = self.db.execute("SELECT id FROM videos")
@@ -325,7 +342,6 @@ class AgentTests(unittest.TestCase):
     def test_summary_keeps_only_valid_evidence(self):
         segments = [{"id": 7, "start": 1.0, "text": "Revenue rose"}]
         responses = [
-            '{"notes":[{"text":"Revenue rose","evidence":["s:7"]}]}',
             '{"summary":"Unsupported overview","claims":[{"text":"Revenue rose","evidence":["s:7"]},{"text":"Invented","evidence":["s:999"]}]}',
         ]
         with patch("pva.intelligence.chat", side_effect=responses):
@@ -337,7 +353,6 @@ class AgentTests(unittest.TestCase):
     def test_professional_summary_sections_keep_evidence_out_of_text(self):
         segments = [{"id": 7, "start": 1.0, "text": "The new tool halves ad production time."}]
         responses = [
-            '{"notes":[{"text":"Production time halves","evidence":["s:7"]}]}',
             '{"takeaway":{"text":"Ad production becomes faster.","evidence":["s:7"]},'
             '"importance":{"text":"Teams can make more variants.","evidence":["s:7"]},'
             '"key_points":[{"text":"Production time falls by half.","evidence":["s:7"]}],'

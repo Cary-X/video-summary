@@ -54,16 +54,17 @@ class LocalVisualTests(unittest.TestCase):
         self.assertIn("Revenue 30", text)
         self.assertIn("model timed out", warnings[0])
 
-    def test_paid_fallback_requires_preference(self):
+    def test_legacy_paid_preference_cannot_enable_cloud_frame_reading(self):
         with self.db:
             self.db.execute("INSERT INTO preferences VALUES ('visual_api_fallback','true')")
+            self.db.execute("INSERT INTO preferences VALUES ('frame_reader','deepseek')")
         with intelligence.usage_context(self.db_path), \
              patch("pva.visual.read", side_effect=RuntimeError("local unavailable")), \
-             patch("pva.intelligence.local_ocr", return_value=""), \
-             patch("pva.intelligence.chat", return_value='{"text":"Revenue: 30"}') as api:
+             patch("pva.intelligence.local_ocr", return_value="Revenue: 30"), \
+             patch("pva.intelligence.chat") as api:
             text = intelligence.read_frame(self.image)
         self.assertIn("Revenue: 30", text)
-        self.assertEqual(api.call_count, 1)
+        api.assert_not_called()
 
     def test_repeated_image_uses_cache_and_records_zero_api_calls(self):
         real_popen = subprocess.Popen

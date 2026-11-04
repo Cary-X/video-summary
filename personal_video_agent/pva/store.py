@@ -79,6 +79,7 @@ def connect(path: Path) -> sqlite3.Connection:
       id TEXT PRIMARY KEY, video_id TEXT NOT NULL REFERENCES videos(id),
       finding_task_id TEXT REFERENCES finding_tasks(id),
       mode TEXT NOT NULL DEFAULT 'ingest',
+      summary_route_json TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'queued', stage TEXT NOT NULL DEFAULT 'queued',
       progress REAL NOT NULL DEFAULT 0, error TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -113,8 +114,11 @@ def connect(path: Path) -> sqlite3.Connection:
     CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage(at);
     CREATE INDEX IF NOT EXISTS idx_ai_usage_video ON ai_usage(video_id);
         """)
-        if "mode" not in {row["name"] for row in db.execute("PRAGMA table_info(processing_tasks)")}:
+        processing_columns = {row["name"] for row in db.execute("PRAGMA table_info(processing_tasks)")}
+        if "mode" not in processing_columns:
             db.execute("ALTER TABLE processing_tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'ingest'")
+        if "summary_route_json" not in processing_columns:
+            db.execute("ALTER TABLE processing_tasks ADD COLUMN summary_route_json TEXT NOT NULL DEFAULT '{}'")
         _initialized_paths.add(resolved)
     return db
 
@@ -130,7 +134,9 @@ def record_ai_usage(db: sqlite3.Connection, *, video_id: str | None,
                      (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0))
     miss = max(0, int(usage.get("prompt_cache_miss_tokens") or max(0, prompt - hit)))
     low = high = None
-    if requested_model == "deepseek-flash":
+    if requested_model.startswith("Ollama · "):
+        low = high = 0.0
+    elif requested_model == "deepseek-flash":
         # DeepSeek public off-peak/peak USD prices per million tokens, 2026-10-20.
         low = (hit * 0.003 + miss * 0.15 + completion * 0.60) / 1_000_000
         high = low * 2
