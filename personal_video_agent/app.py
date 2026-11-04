@@ -255,7 +255,7 @@ def finding_panel() -> None:
             card = json.loads(row["card_json"] or "{}")
             label = (card.get("title") if row["kind"] == "card" else
                      Path(row["source"]).name if row["kind"] == "photo" else row["source"])
-            with st.container(border=True):
+            with st.container(border=True, key=f"finding_card_{row['id']}"):
                 st.subheader(label or "Video", anchor=False)
                 st.caption(f"{row['kind']} · {row['status']} · {row['stage']}")
                 st.progress(float(row["progress"]), text=row["stage"])
@@ -316,7 +316,7 @@ def processing_panel() -> None:
             st.info("Processing is empty. Choose a found video and click Process.")
             return
         for row in rows:
-            with st.container(border=True):
+            with st.container(border=True, key=f"processing_card_{row['id']}"):
                 st.subheader(row["title"], anchor=False)
                 st.caption(f"{row['status']} · {row['stage']}")
                 route = json.loads(row.get("summary_route_json") or "{}")
@@ -365,13 +365,9 @@ if page == "Raccoon activity":
     elif activity == "Processing":
         processing_panel()
 
-if page == "Library":
-    st.header("Your library", anchor=False)
-    st.write("Read the main points and open the Δ bubbles to check the evidence.")
-    videos = [dict(row) for row in db.execute("SELECT * FROM videos WHERE status!='cancelled'")]
-    if not videos:
-        st.info("Completed videos will appear here.")
-    else:
+def library_listing(videos: list[dict]) -> None:
+    with st.container(key="library_list"):
+        filters = st.session_state.get("library_filters", {})
         counts = {}
         for item in videos:
             category = item["category"] or ""
@@ -379,26 +375,54 @@ if page == "Library":
         types = ["__all__"] + sorted(counts, key=presentation.category_label)
         type_col, date_col, order_col = st.columns(3)
         selected_type = type_col.selectbox(
-            "Video type", types,
+            "Video type", types, key="library_type_filter",
+            index=types.index(filters["type"]) if filters.get("type") in types else 0,
             format_func=lambda category: (
                 f"All types ({len(videos)})" if category == "__all__" else
                 f"{presentation.category_label(category)} ({counts[category]})"))
         date_field = date_col.selectbox(
-            "Sort date", ["published_at", "created_at"],
+            "Sort date", ["published_at", "created_at"], key="library_date_filter",
+            index=int(filters.get("date") == "created_at"),
             format_func=lambda field: ("Video date" if field == "published_at"
                                        else "Date added"))
-        order = order_col.selectbox("Order", ["Latest first", "Oldest first"])
+        order = order_col.selectbox("Order", ["Latest first", "Oldest first"], key="library_order_filter",
+                                   index=int(filters.get("order") == "Oldest first"))
+        st.session_state["library_filters"] = {"type": selected_type, "date": date_field, "order": order}
         if selected_type != "__all__":
             videos = [item for item in videos
                       if (item["category"] or "") == selected_type]
         videos = presentation.order_library(
             videos, date_field=date_field, newest_first=order == "Latest first")
-        options = {f"{item['title']} · {item['status']} · {item['id'][:6]}": item["id"]
-                   for item in videos}
-        chosen_label = st.selectbox("Video", list(options), index=next(
-            (i for i, value in enumerate(options.values())
-             if value == st.session_state.get("selected")), 0))
-        video_id = options[chosen_label]
+        for item in videos:
+            with st.container(border=True, key=f"library_row_{item['id']}"):
+                title, action = st.columns([4, 1.35], vertical_alignment="center")
+                with title:
+                    st.subheader(item["title"], anchor=False)
+                    meta = [item["author"] or "Unknown creator",
+                            item["published_at"] or "Date unknown",
+                            presentation.category_label(item["category"])]
+                    if item["status"] != "ready":
+                        meta.append(item["status"].replace("_", " ").title())
+                    st.caption(" · ".join(meta))
+                label = "Read summary" if item["status"] == "ready" else "View video"
+                if action.button(label, key=f"library_open_{item['id']}", width="stretch"):
+                    st.session_state["selected"] = item["id"]
+                    st.rerun()
+
+
+if page == "Library":
+    st.header("Your library", anchor=False)
+    videos = [dict(row) for row in db.execute("SELECT * FROM videos WHERE status!='cancelled'")]
+    video_id = st.session_state.get("selected")
+    if not videos:
+        st.info("Completed videos will appear here.")
+    elif video_id not in {item["id"] for item in videos}:
+        st.write("Choose a video to read its summary or check its progress.")
+        library_listing(videos)
+    else:
+        if st.button("← Back to video list"):
+            st.session_state.pop("selected", None)
+            st.rerun()
         video = store.detail(db, video_id)
         st.subheader(video["title"])
         st.write(f"{video['author']} · {video['published_at'] or 'Date unknown'} · "
@@ -408,6 +432,7 @@ if page == "Library":
             with st.expander("Source photo"):
                 st.image(video["source_photo"])
         if video["status"] == "ready":
+            st.caption("Select a little TV beside a point to see its evidence.")
             st.html(presentation.summary_html(video, font_size=sizes[size_choice]))
             with st.expander("Full transcript"):
                 for group in presentation.merge_transcript(video["segments"]):

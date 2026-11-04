@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from base64 import b64encode
 from datetime import datetime, timezone
 from html import escape
 
@@ -10,6 +11,16 @@ from markdown_it import MarkdownIt
 
 _EVIDENCE_SUFFIX = re.compile(r"\s*\((?:(?:s|f):\d+(?:,\s*)?)+\)\s*$")
 _VIDEO_DATE = re.compile(r"(\d{4})[-/.]?(\d{2})[-/.]?(\d{2})")
+_TV_ICON = b64encode(b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 25">
+  <g stroke="#51384d" stroke-linecap="round">
+    <path d="M10 5 7 1m6 4 4-4M7 21l-2 3m15-3 2 3" fill="none" stroke-width="1.7"/>
+    <rect x="2" y="5" width="24" height="16" rx="4" fill="#cdb2ca" stroke-width="1.6"/>
+    <rect x="5" y="8" width="14" height="10" rx="3" fill="#faf0f8" stroke-width="1.2"/>
+    <path d="M9 12.5h6m-6 2.5h4" stroke-width="1.1"/>
+  </g>
+  <circle cx="22.5" cy="11" r="1" fill="#51384d"/>
+  <circle cx="22.5" cy="15.5" r="1" fill="#51384d"/>
+</svg>""").decode("ascii")
 CATEGORY_LABELS = {
     "technology": "Tech", "medicine": "Medical", "finance": "Finance",
     "politics": "Politics", "religion": "Religion", "music": "Music",
@@ -95,9 +106,9 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
         marker = ""
         if source_parts:
             marker = ('<details class="pva-source"><summary aria-label="Show supporting sources" '
-                      'title="Show supporting sources">Δ</summary>'
+                      'title="Show supporting sources"></summary>'
                       f'<div class="pva-source-panel"><strong>Supporting sources · {span}</strong>'
-                      '<span class="pva-source-hint">Drag the bottom-right corner to resize · Click Δ to close</span>' +
+                      '<span class="pva-source-hint">Drag the bottom-right corner to resize · Select the TV again to close</span>' +
                       "".join(source_parts) + '</div></details>')
         parts.append('<div class="pva-point">' + ('<span aria-hidden="true">• </span>' if bullet else '') +
                      '<div class="pva-copy">' + body + '</div>' + marker + '</div>')
@@ -106,10 +117,12 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
 .pva-point {{ position:relative; margin:0 0 .85em; }}
 .pva-copy, .pva-copy > p {{ display:inline; margin:0; font-size:inherit; }}
 .pva-source {{ display:inline; margin-left:.35em; }}
-.pva-source > summary {{ display:inline; list-style:none; cursor:pointer; color:#168bba;
-  font-size:.78em; font-weight:700; padding:.05em .3em; border-radius:4px; }}
+.pva-source > summary {{ display:inline-flex; vertical-align:middle; list-style:none;
+  cursor:pointer; color:#694c3d; padding:.15em .27em; border-radius:.45em; }}
+.pva-source > summary::before {{ content:""; width:1.35em; height:1.23em; display:block;
+  background: url("data:image/svg+xml;base64,{_TV_ICON}") center / contain no-repeat; }}
 .pva-source > summary::-webkit-details-marker {{ display:none; }}
-.pva-source > summary:hover, .pva-source[open] > summary {{ background:rgba(22,139,186,.15); }}
+.pva-source > summary:hover, .pva-source[open] > summary {{ background:#eddfeb; }}
 .pva-source:focus-within > .pva-source-panel {{ z-index:110; }}
 .pva-source-panel {{ position:absolute; top:100%; left:0; z-index:100; box-sizing:border-box;
   width:min(680px,100%); height:320px; resize:both; overflow:auto; padding:16px 18px 24px;
