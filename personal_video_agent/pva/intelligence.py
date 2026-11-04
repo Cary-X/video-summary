@@ -158,6 +158,10 @@ def local_model() -> str:
     return os.getenv("PVA_LOCAL_MODEL", "").strip() or "qwen3:1.7b"
 
 
+class ModelOutputLimit(RuntimeError):
+    """The model responded, but exhausted its output budget."""
+
+
 def _local_chat(messages: list[dict], purpose: str) -> str:
     model = local_model()
     limits = {"classification": 80, "summary notes": 480, "summary": 850, "translation": 2500}
@@ -190,7 +194,7 @@ def _local_chat(messages: list[dict], purpose: str) -> str:
         content = choice["message"].get("content")
         _record_usage(purpose, f"llama.cpp · {model}", f"llama.cpp · {model}", output.get("usage") or {})
         if choice.get("finish_reason") == "length":
-            raise RuntimeError(f"Local {model} output reached its limit during {purpose}.")
+            raise ModelOutputLimit(f"Local {model} output reached its limit during {purpose}.")
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError(f"Local {model} returned an empty answer during {purpose}.")
         return content
@@ -215,7 +219,7 @@ def _local_chat(messages: list[dict], purpose: str) -> str:
                    "completion_tokens": output.get("eval_count")})
     content = output.get("message", {}).get("content")
     if output.get("done_reason") == "length":
-        raise RuntimeError(f"Local {model} output reached its limit during {purpose}.")
+        raise ModelOutputLimit(f"Local {model} output reached its limit during {purpose}.")
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError(f"Local {model} returned an empty answer during {purpose}.")
     return content
@@ -300,26 +304,66 @@ def _json(raw: str) -> dict:
 
 
 def translate(segments: list[dict], source_language: str, target_language: str,
-              on_progress: Callable[[int, int], None] | None = None) -> dict[int, str]:
+              on_progress: Callable[[int, int], None] | None = None, *,
+              on_batch: Callable[[dict[int, str]], None] | None = None) -> dict[int, str]:
     if same_language(source_language, target_language):
         return {}
+    language = LANGUAGE_NAMES.get(target_language, target_language)
+
+    def recover(batch: list[dict]) -> dict[int, str]:
+        # Short local labels are easier to copy. SQLite IDs never come from the model.
+        payload = [{"id": index, "text": row["text"]}
+                   for index, row in enumerate(batch, start=1)]
+        try:
+            result = _json(chat([
+                {"role": "system", "content": f"Translate every input item into {language}. "
+                 'Return JSON: {"items":[{"id":integer,"text":string}]}. '
+                 "Copy the input ID for each translation. Keep items separate. Do not summarize."},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ], purpose="translation"))
+            items = result.get("items")
+        except (ValueError, ModelOutputLimit):
+            items = None
+        found: dict[int, str] = {}
+        if isinstance(items, list):
+            # A single result has only one possible source segment.
+            if len(batch) == len(items) == 1 and isinstance(items[0], dict):
+                text = items[0].get("text")
+                if isinstance(text, str) and text.strip():
+                    return {batch[0]["id"]: text.strip()}
+            seen: set[int] = set()
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                index, text = item.get("id"), item.get("text")
+                if type(index) is not int or not 1 <= index <= len(batch):
+                    # Unexpected labels may indicate the whole batch was renumbered.
+                    found.clear()
+                    break
+                if index in seen:
+                    found.pop(index, None)
+                elif isinstance(text, str) and text.strip():
+                    found[index] = text.strip()
+                seen.add(index)
+        recovered = {batch[index - 1]["id"]: text for index, text in found.items()}
+        missing = [row for index, row in enumerate(batch, start=1) if index not in found]
+        if missing and len(batch) > 1:
+            split = (len(missing) + 1) // 2
+            recovered.update(recover(missing[:split]))
+            if missing[split:]:
+                recovered.update(recover(missing[split:]))
+        return recovered
+
     translated: dict[int, str] = {}
-    total = (len(segments) + 34) // 35
-    for start in range(0, len(segments), 35):
-        batch = segments[start:start + 35]
-        payload = [{"id": s["id"], "text": s["text"]} for s in batch]
-        result = _json(chat([
-            {"role": "system", "content": f"Translate each text into {LANGUAGE_NAMES.get(target_language, target_language)}. Return JSON: {{\"items\":[{{\"id\":integer,\"text\":string}}]}}. Preserve every id and meaning. Do not summarize."},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ], purpose="translation"))
-        items = result.get("items", [])
-        found = {int(x["id"]): str(x["text"]).strip() for x in items}
-        expected = {s["id"] for s in batch}
-        if set(found) != expected or not all(found.values()):
-            raise ValueError("Translation omitted or changed segment IDs")
-        translated.update(found)
+    batch_size = 24
+    for start in range(0, len(segments), batch_size):
+        batch = segments[start:start + batch_size]
+        recovered = recover(batch)
+        if on_batch and recovered:
+            on_batch(recovered)
+        translated.update(recovered)
         if on_progress:
-            on_progress(start // 35 + 1, total)
+            on_progress(start + len(batch), len(segments))
     return translated
 
 

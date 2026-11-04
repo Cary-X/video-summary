@@ -29,6 +29,42 @@ class AgentTests(unittest.TestCase):
         self.db.close()
         self.temp.cleanup()
 
+    def test_translation_recovers_missing_labels_without_moving_timestamps(self):
+        rows = [{"id": 501, "text": "one"}, {"id": 903, "text": "two"},
+                {"id": 992, "text": "three"}]
+        replies = [
+            '{"items":[{"id":3,"text":"三"},{"id":1,"text":"一"}]}',
+            '{"items":[{"id":903,"text":"二"}]}',
+        ]
+        with patch.object(intelligence, "chat", side_effect=replies) as chat:
+            result = intelligence.translate(rows, "en", "zh-Hans")
+        self.assertEqual(result, {501: "一", 903: "二", 992: "三"})
+        retry = json.loads(chat.call_args.args[0][-1]["content"])
+        self.assertEqual(retry, [{"id": 1, "text": "two"}])
+
+    def test_translation_retry_reuses_originals_if_model_still_omits_segments(self):
+        store.replace_segments(self.db, self.video_id,
+                               [{"start": 0, "end": 2, "text": "Hola."},
+                                {"start": 2, "end": 4, "text": "Gracias."}])
+        with self.db:
+            self.db.execute("UPDATE videos SET status='failed',language='es' WHERE id=?",
+                            (self.video_id,))
+            self.db.execute("UPDATE segments SET translated_text='Hello.' WHERE video_id=? AND seq=0",
+                            (self.video_id,))
+            store.event(self.db, self.video_id, "translation", "Translating")
+            store.event(self.db, self.video_id, "failed", "Translation omitted segment IDs")
+        with patch.object(media, "metadata", side_effect=AssertionError("metadata called")), \
+             patch.object(intelligence, "chat", return_value='{"items":[]}') as chat, \
+             patch.object(intelligence, "summarize", return_value=("Hello.", [])) as summarize, \
+             patch.object(intelligence, "classify", return_value="other"):
+            result = pipeline.process(self.db, self.video_id, asset_dir=self.root, skill_file=self.skill)
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(summarize.call_args.args[0][0]["translated_text"], "Hello.")
+        self.assertIsNone(summarize.call_args.args[0][1]["translated_text"])
+        self.assertEqual(json.loads(chat.call_args.args[0][-1]["content"]),
+                         [{"id": 1, "text": "Gracias."}])
+        self.assertTrue(any(event["stage"] == "translation warning" for event in result["events"]))
+
     def test_captions_skip_download_and_trace_summary(self):
         rows = [{"start": 1.0, "end": 3.0, "text": "The value increased."}]
 

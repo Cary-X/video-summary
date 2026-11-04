@@ -341,6 +341,16 @@ def processing_panel() -> None:
                     st.caption(latest["detail"])
                 if row["status"] == "failed":
                     st.error(row["error"] or "Processing failed")
+                    if route.get("method") == "direct":
+                        st.caption("Automatic can split long transcripts into batches.")
+                        if st.button("Retry with Automatic", key=f"retry-auto-{row['id']}"):
+                            try:
+                                tasks.retry_processing(connection, row["id"],
+                                    summary_route=SummaryRoute(**{**route, "method": "auto"}))
+                                manager.pump()
+                                st.rerun()
+                            except ValueError as exc:
+                                st.error(str(exc))
                     if st.button("Retry processing", key=f"retry-process-{row['id']}"):
                         tasks.retry_processing(connection, row["id"])
                         manager.pump()

@@ -56,48 +56,74 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
     try:
         with db:
             db.execute("UPDATE videos SET status='processing',error=NULL WHERE id=?", (video_id,))
-        stage("metadata", "Resolving video metadata", 0.04)
-        source = media.metadata(video["url"], cookie_browser=cookie_browser)
-        with db:
-            db.execute("""UPDATE videos SET title=?,author=?,published_at=?,duration=? WHERE id=?""",
-                       (source["title"] or video["title"], source["author"] or video["author"],
-                        video["published_at"] if " " in video["published_at"] else
-                        source["published_at"] or video["published_at"],
-                        source["duration"], video_id))
-        stage("captions", f"Checking captions in {video['target_language']} first", 0.10)
-        caption_result = media.captions(source["raw"], preferred_language=video["target_language"])
-        if caption_result:
-            segments, language = caption_result
-            transcript_source = "captions"
+        previous = db.execute(
+            "SELECT stage FROM events WHERE video_id=? ORDER BY id DESC LIMIT 2", (video_id,)
+        ).fetchall()
+        resume_translation = (
+            video["status"] == "failed" and bool(video["language"]) and
+            [row["stage"] for row in previous] == ["failed", "translation"]
+        )
+        segment_rows = []
+        if resume_translation:
+            segment_rows = [dict(x) for x in db.execute(
+                "SELECT * FROM segments WHERE video_id=? ORDER BY seq", (video_id,))]
+        if segment_rows:
+            language = video["language"]
+            stage("transcribed", "Reusing the saved transcript after the translation failure", 0.44)
         else:
-            stage("download", "Downloading media for local ASR", 0.16)
-            movie = media.download_video(video["url"], scratch / "audio",
-                                         cookie_browser=cookie_browser, purpose="asr")
-            stage("asr", "Transcribing audio locally", 0.30)
-            segments, language = media.transcribe(
-                movie, on_progress=(lambda fraction, detail: on_progress(
-                    "asr", 0.30 + 0.14 * fraction, detail)) if on_progress else None)
-            transcript_source = "asr"
-            movie = None  # Audio-only media cannot supply screenshots.
-        store.replace_segments(db, video_id, segments)
-        with db:
-            db.execute("UPDATE videos SET language=?,transcript_source=? WHERE id=?",
-                       (language, transcript_source, video_id))
-        segment_rows = [dict(x) for x in db.execute(
-            "SELECT * FROM segments WHERE video_id=? ORDER BY seq", (video_id,))]
+            stage("metadata", "Resolving video metadata", 0.04)
+            source = media.metadata(video["url"], cookie_browser=cookie_browser)
+            with db:
+                db.execute("""UPDATE videos SET title=?,author=?,published_at=?,duration=? WHERE id=?""",
+                           (source["title"] or video["title"], source["author"] or video["author"],
+                            video["published_at"] if " " in video["published_at"] else
+                            source["published_at"] or video["published_at"],
+                            source["duration"], video_id))
+            stage("captions", f"Checking captions in {video['target_language']} first", 0.10)
+            caption_result = media.captions(source["raw"], preferred_language=video["target_language"])
+            if caption_result:
+                segments, language = caption_result
+                transcript_source = "captions"
+            else:
+                stage("download", "Downloading media for local ASR", 0.16)
+                movie = media.download_video(video["url"], scratch / "audio",
+                                             cookie_browser=cookie_browser, purpose="asr")
+                stage("asr", "Transcribing audio locally", 0.30)
+                segments, language = media.transcribe(
+                    movie, on_progress=(lambda fraction, detail: on_progress(
+                        "asr", 0.30 + 0.14 * fraction, detail)) if on_progress else None)
+                transcript_source = "asr"
+                movie = None  # Audio-only media cannot supply screenshots.
+            store.replace_segments(db, video_id, segments)
+            with db:
+                db.execute("UPDATE videos SET language=?,transcript_source=? WHERE id=?",
+                           (language, transcript_source, video_id))
+            segment_rows = [dict(x) for x in db.execute(
+                "SELECT * FROM segments WHERE video_id=? ORDER BY seq", (video_id,))]
         target = video["target_language"]
         if not media.same_language(language, target):
             stage("translation", f"Translating {language} to {target}", 0.45)
-            translated = intelligence.translate(
-                segment_rows, language, target,
+            translated = {row["id"]: row["translated_text"] for row in segment_rows
+                          if row["translated_text"]}
+            pending = [row for row in segment_rows if row["id"] not in translated]
+
+            def save_translations(batch: dict[int, str]) -> None:
+                with db:
+                    db.executemany("UPDATE segments SET translated_text=? WHERE id=?",
+                                   [(text, segment_id) for segment_id, text in batch.items()])
+
+            translated.update(intelligence.translate(
+                pending, language, target, on_batch=save_translations,
                 on_progress=(lambda done, total: on_progress(
                     "translation", 0.45 + 0.20 * done / total,
-                    f"Translated batch {done}/{total}") if on_progress else None))
-            with db:
-                db.executemany("UPDATE segments SET translated_text=? WHERE id=?",
-                               [(text, segment_id) for segment_id, text in translated.items()])
+                    f"Checked translation for {done}/{total} remaining transcript segments")
+                    if on_progress else None)))
             for row in segment_rows:
-                row["translated_text"] = translated[row["id"]]
+                row["translated_text"] = translated.get(row["id"])
+            if missing := len(segment_rows) - len(translated):
+                stage("translation warning",
+                      f"Kept the original transcript for {missing} segment(s) without a valid translation.",
+                      0.65)
         else:
             stage("translation", f"Skipped: transcript is already {target}", 0.65)
         cues = _visual_cues(segment_rows)
