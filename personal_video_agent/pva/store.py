@@ -96,6 +96,16 @@ def connect(path: Path) -> sqlite3.Connection:
       cache_miss_tokens INTEGER NOT NULL,
       estimated_cost_low_usd REAL, estimated_cost_high_usd REAL
     );
+    CREATE TABLE IF NOT EXISTS visual_cache (
+      cache_key TEXT PRIMARY KEY, at TEXT NOT NULL, result_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS local_visual_usage (
+      id INTEGER PRIMARY KEY, at TEXT NOT NULL, video_id TEXT REFERENCES videos(id),
+      finding_task_id TEXT, purpose TEXT NOT NULL, model TEXT NOT NULL,
+      device TEXT NOT NULL, seconds REAL NOT NULL, status TEXT NOT NULL,
+      cache_hit INTEGER NOT NULL DEFAULT 0, output_chars INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    );
     CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id, seq);
     CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category, created_at);
     CREATE INDEX IF NOT EXISTS idx_finding_status ON finding_tasks(status, created_at);

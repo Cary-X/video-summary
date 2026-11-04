@@ -121,7 +121,12 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
                     try:
                         image_path = asset_dir / "frames" / video_id / f"{row['seq']:05d}.jpg"
                         media.capture_frame(movie, (row["start"] + row["end"]) / 2, image_path)
-                        extracted = intelligence.read_frame(image_path)
+                        extracted = intelligence.read_frame(
+                            image_path,
+                            on_progress=(lambda detail: on_progress(
+                                "visual", 0.66 + 0.12 * index / len(cues), detail)) if on_progress else None,
+                            on_warning=lambda detail: stage("visual warning", detail,
+                                0.66 + 0.12 * index / len(cues)))
                         with db:
                             cursor = db.execute("""INSERT INTO frames(video_id,segment_id,at_seconds,image_path,extracted_text)
                               VALUES (?,?,?,?,?)""", (video_id, row["id"], row["start"],
@@ -214,7 +219,11 @@ def repair_visuals(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
             image_path = asset_dir / "frames" / video_id / f"{row['seq']:05d}.jpg"
             try:
                 media.capture_frame(movie, (row["start"] + row["end"]) / 2, image_path)
-                extracted = intelligence.read_frame(image_path)
+                extracted = intelligence.read_frame(
+                    image_path,
+                    on_progress=(lambda detail: on_progress(
+                        "visual", 0.1 + 0.7 * index / len(cues), detail)) if on_progress else None,
+                    on_warning=lambda detail: _visual_warning(db, video_id, detail))
                 with db:
                     db.execute("""INSERT OR IGNORE INTO frames
                       (video_id,segment_id,at_seconds,image_path,extracted_text)
@@ -237,6 +246,51 @@ def repair_visuals(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         return result
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _visual_warning(db: sqlite3.Connection, video_id: str, detail: str) -> None:
+    with db:
+        store.event(db, video_id, "visual warning", detail)
+
+
+def reread_visuals(db: sqlite3.Connection, video_id: str, *, skill_file: Path,
+                   on_progress: Callable[[str, float, str], None] | None = None) -> dict:
+    """Upgrade saved visual evidence without downloading or transcribing again."""
+    video = store.detail(db, video_id)
+    if video["status"] != "ready" or not video["frames"]:
+        raise ValueError("A completed video with saved screenshots is required")
+    changed = 0
+    for index, frame in enumerate(video["frames"]):
+        def progress(detail):
+            if on_progress:
+                on_progress("visual", 0.1 + 0.7 * index / len(video["frames"]), detail)
+
+        progress(f"Rereading saved screenshot {index + 1}/{len(video['frames'])}")
+        try:
+            text = intelligence.read_frame(Path(frame["image_path"]), on_progress=progress,
+                on_warning=lambda detail: _visual_warning(db, video_id, detail))
+            if not text.strip() or text == frame["extracted_text"]:
+                continue
+            if text.startswith("RapidOCR text only;") and frame["extracted_text"]:
+                with db:
+                    store.event(db, video_id, "visual warning", "Kept previous visual evidence after local reader failure")
+                continue
+            with db:
+                db.execute("UPDATE frames SET extracted_text=? WHERE id=?", (text, frame["id"]))
+                store.event(db, video_id, "visual", f"Reread saved screenshot {index + 1}")
+            changed += 1
+        except ProcessingCancelled:
+            raise
+        except Exception as exc:
+            with db:
+                store.event(db, video_id, "visual warning", f"Saved screenshot kept unchanged: {exc}")
+    if not changed:
+        if on_progress:
+            on_progress("ready", 1.0, "Kept existing visual evidence and summary")
+        return store.detail(db, video_id)
+    if on_progress:
+        on_progress("summary", 0.85, "Refreshing summary from updated visual evidence")
+    return resummarize(db, video_id, skill_file=skill_file, on_progress=on_progress)
 
 
 def feedback(db: sqlite3.Connection, video_id: str, rating: int, note: str = "") -> None:

@@ -103,6 +103,8 @@ def enqueue_processing(db: sqlite3.Connection, finding_task_id: str,
     if not 0 <= candidate_index < len(candidates):
         raise ValueError("Choose a search result")
     chosen = candidates[candidate_index]
+    if chosen.get("verified") is not True:
+        raise ValueError("The original video has not been verified. Keep it in Finding until a reliable match is found.")
     card = json.loads(row["card_json"] or "{}")
     video_id = store.add_video(
         db, chosen["url"], title=chosen.get("title") or card.get("title") or "Untitled",
@@ -126,7 +128,7 @@ def enqueue_processing_video(db: sqlite3.Connection, video_id: str,
                              *, mode: str = "ingest") -> str:
     if db.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is None:
         raise KeyError(video_id)
-    if mode not in {"ingest", "repair_visual"}:
+    if mode not in {"ingest", "repair_visual", "reread_visual"}:
         raise ValueError("Unsupported processing mode")
     task_id = uuid.uuid4().hex
     with db:
@@ -268,7 +270,10 @@ class TaskManager:
                         progress=fraction, detail=detail)
 
             with intelligence.usage_context(self.db_path, video_id=row["video_id"]):
-                if row["mode"] == "repair_visual":
+                if row["mode"] == "reread_visual":
+                    pipeline.reread_visuals(db, row["video_id"], skill_file=self.skill_file,
+                                           on_progress=report)
+                elif row["mode"] == "repair_visual":
                     pipeline.repair_visuals(db, row["video_id"], asset_dir=self.asset_dir,
                                             skill_file=self.skill_file,
                                             cookie_browser=cookie_browser(db),

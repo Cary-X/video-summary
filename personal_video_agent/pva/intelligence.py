@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from collections.abc import Callable
 
-from . import store
+from . import store, visual
 from .media import same_language
 
 
@@ -228,7 +228,30 @@ def translate(segments: list[dict], source_language: str, target_language: str,
     return translated
 
 
-def read_frame(image: Path) -> str:
+def read_frame(image: Path, *, on_progress=None, on_warning=None) -> str:
+    _load_env()
+    context = _usage_context.get()
+    db_path, video_id, finding_task_id = context or (visual.ROOT / "data" / "personal.db", None, None)
+    settings_db = store.connect(db_path)
+    try:
+        backend, api_fallback = visual.config(settings_db)
+    finally:
+        settings_db.close()
+    if backend == "paddleocr":
+        try:
+            result = visual.read(image, db_path=db_path, video_id=video_id,
+                                 finding_task_id=finding_task_id, on_progress=on_progress)
+        except RuntimeError as exc:
+            warning = f"Local visual reading failed: {exc}"
+            if on_warning:
+                on_warning(warning)
+            if not api_fallback:
+                ocr = local_ocr(image)
+                if ocr:
+                    return ("RapidOCR text only; chart structure and visual details are unverified.\n" + ocr)
+                raise
+        else:
+            return f"Local {result['model']} visual evidence:\n" + result["text"]
     ocr = local_ocr(image)
     try:
         encoded = base64.b64encode(image.read_bytes()).decode("ascii")

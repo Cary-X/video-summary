@@ -31,3 +31,17 @@ The deliverable is this folder. Follow `README.md` to configure and launch local
 ## 6. Measure, learn, evaluate
 
 The Measure & learn tab charts provider-reported token usage by day, step, model, and video, and shows the estimated cost range. It also retains quality measures: ready and failed videos, videos with screenshots, traced claims, feedback count, average rating, and categories. Review failed-stage events and low-rated notes to decide the next repair. Refresh uses saved evidence and the latest feedback. Evaluate representative captioned, ASR, translated, and chart-heavy videos. Inspect whether each factual point's cited segment or frame supports it, whether the central message and importance are clear, and whether the category matches the final summary. Log misses as feedback, fix the stage responsible, and rerun that case.
+
+## Local visual upgrade (2026-11-04)
+
+- Direction: reduce paid frame-reading calls while retaining chart/table evidence and provenance.
+- Specification: use the full PaddleOCR-VL 1.6 layout + recognition pipeline; enable chart recognition; keep DeepSeek Flash for photo-card identification, matching, translation and summarization. Paid visual fallback requires a saved opt-in.
+- Build: separate `.venv-paddleocr`; bounded/cancellable worker; content-hash cache; local usage and failures recorded separately from provider tokens; sidebar backend choice.
+- Verify: unit tests check chart blocks/bounds, no paid calls on local success or failure, explicit API fallback, caching, and Windows-safe worker cancellation. `tools/evaluate_local_vision.py` produces a real synthetic chart/table smoke check and records measured runtime and a repeated cache read under `data/vision-eval/`. Inspect actual output before claiming local recognition quality.
+- Learn/evaluate: retain local runtime, model, device, failure and cache statistics. Do not infer that a 0.9B model is fast on this CPU or that OCR proves every chart relationship. Compare structured chart numbers with the source image.
+
+Real evaluation: the full native CPU pipeline recognized a synthetic chart (Jan 20, Feb 35) and table (costs 10 and 12), with chart/table layout labels and no paid API calls. The first run took 408.891 seconds including model downloads and initialization; the cached repeat returned immediately. The cold-run figure is not a steady-state inference benchmark. See ignored data/vision-eval/ result files for this machine’s measurements.
+
+Measured repair: feeding every text region of a crowded 480p interface screenshot to the VLM exceeded 600 seconds on this CPU. Layout triage now sends only chart/table/formula regions to the full VLM pipeline and uses RapidOCR for ordinary text. The same screenshot then completed in 21.203 seconds, with a 0.016-second cached repeat. DeepSeek remains the source identification and match-verification model; unverified matches cannot enter Processing.
+
+With the weights already on disk, the optimized pipeline read the synthetic chart and table correctly in 178.844 seconds including model startup; the cached repeat took 0.015 seconds. Both visual evaluations made zero paid API calls.

@@ -12,3 +12,4 @@ __pycache__/
 *.pyc
 .venv/
 .venv64/
+.venv-paddleocr/

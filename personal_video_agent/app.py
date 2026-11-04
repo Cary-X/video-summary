@@ -9,7 +9,7 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image
 
-from pva import intelligence, media, pipeline, presentation, store, tasks, usage_visuals
+from pva import intelligence, media, pipeline, presentation, store, tasks, usage_visuals, visual
 
 
 ROOT = Path(__file__).resolve().parent
@@ -36,6 +36,22 @@ manager = tasks.get_manager(DB, DATA, SKILL)
 
 with st.sidebar:
     st.header("Preferences")
+    intelligence._load_env()
+    saved_reader, saved_fallback = visual.config(db)
+    with st.expander("Pictures and charts"):
+        frame_reader = st.selectbox("Read video screenshots with", ["paddleocr", "deepseek"],
+            index=["paddleocr", "deepseek"].index(saved_reader),
+            format_func=lambda value: ("Local PaddleOCR-VL 1.6" if value == "paddleocr"
+                                       else "DeepSeek Flash API"))
+        visual_fallback = st.checkbox("Allow DeepSeek if local reading fails",
+                                      value=saved_fallback, disabled=frame_reader != "paddleocr")
+        st.caption("Local chart and text reading uses no API tokens. CPU inference may take longer. "
+                   "Photo identification, matching and summaries still use DeepSeek Flash.")
+    if frame_reader != saved_reader or visual_fallback != saved_fallback:
+        with db:
+            db.executemany("""INSERT INTO preferences(key,value) VALUES (?,?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+              [("frame_reader", frame_reader), ("visual_api_fallback", str(visual_fallback).lower())])
     languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Hant",
                  "Español": "es", "粵語": "yue"}
     saved_language_row = db.execute(
@@ -175,6 +191,8 @@ def finding_panel() -> None:
                 if row["status"] == "ready":
                     candidates = json.loads(row["candidates_json"])
                     if candidates:
+                        if not any(item.get("verified") is True for item in candidates):
+                            st.warning("No verified original video found. Add a clearer photo or the original video link.")
                         choices = list(range(len(candidates))) + [None]
                         default = next((i for i, item in enumerate(candidates)
                                         if item.get("verified")), len(candidates))
@@ -188,7 +206,9 @@ def finding_panel() -> None:
                         with st.expander("Why these results matched or did not match"):
                             for item in candidates:
                                 st.write(f"{item['title']}: {item.get('reason','')}")
-                        if st.button("Process", key=f"process-{row['id']}", disabled=chosen is None):
+                        verified_choice = chosen is not None and candidates[chosen].get("verified") is True
+                        if st.button("Process", key=f"process-{row['id']}", disabled=not verified_choice,
+                                     help="A verified original video is required before processing"):
                             tasks.enqueue_processing(connection, row["id"], chosen, target_language)
                             manager.pump()
                             st.rerun()
@@ -301,6 +321,13 @@ with library_tab:
                         st.image(frame["image_path"],
                                  caption=presentation.timestamp(frame["at_seconds"]))
                         st.write(frame["extracted_text"] or "No readable visual text")
+                active_visual = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
+                  AND status IN ('queued','running') LIMIT 1""", (video_id,)).fetchone()
+                if st.button("Reread saved screenshots", disabled=bool(active_visual),
+                             help="Uses the selected picture reader, then refreshes the summary with DeepSeek. Reuses saved screenshots and transcript."):
+                    tasks.enqueue_processing_video(db, video_id, mode="reread_visual")
+                    manager.pump()
+                    st.success("Saved screenshots sent to Processing")
             with st.form("feedback"):
                 rating = st.slider("How useful was this summary?", 1, 5, 4)
                 note = st.text_input("What should improve next time?")
@@ -449,6 +476,21 @@ with measure_tab:
                                 "prompt_tokens", "completion_tokens", "total_tokens",
                                 "cache_hit_tokens", "estimated_cost_low_usd",
                                 "estimated_cost_high_usd"]], hide_index=True)
+    st.markdown("#### Local picture and chart reading")
+    local_reads = [dict(row) for row in db.execute("""SELECT l.at,l.model,l.device,l.purpose,
+      l.seconds,l.status,l.cache_hit,l.output_chars,l.error,v.title
+      FROM local_visual_usage l LEFT JOIN videos v ON v.id=l.video_id
+      WHERE (? IS NULL OR l.at>=?) ORDER BY l.id DESC""", (since, since))]
+    if local_reads:
+        left, middle, right = st.columns(3)
+        left.metric("Local visual reads", len(local_reads))
+        middle.metric("Cache hits", sum(row["cache_hit"] for row in local_reads))
+        right.metric("API cost / tokens", "$0 / 0")
+        st.dataframe(local_reads, hide_index=True)
+        st.caption("Elapsed seconds include model loading and first-use downloads. "
+                   "Local compute uses your PC's resources; API usage is recorded separately above.")
+    else:
+        st.caption("Local PaddleOCR-VL runs will show model, device, time, cache hits and failures here.")
     with st.expander("Library quality measures"):
         st.json(metrics)
 
