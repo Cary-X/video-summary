@@ -120,7 +120,7 @@ def settings_page() -> None:
     with st.form("summary_settings", clear_on_submit=True):
         method = st.selectbox("How should the agent summarize?", list(methods),
                               index=list(methods).index(summary_route.method), format_func=methods.get)
-        st.caption("Automatic adapts to transcript length. Quick writes in one pass. "
+        st.caption("Automatic adapts to transcript length. Quick writes in one pass when the transcript fits. "
                    "Detailed collects evidence in batches before writing.")
         base_url, model, api_key = "", "", ""
         if backend == "api":

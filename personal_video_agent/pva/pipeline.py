@@ -59,9 +59,13 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         previous = db.execute(
             "SELECT stage FROM events WHERE video_id=? ORDER BY id DESC LIMIT 2", (video_id,)
         ).fetchall()
+        stages = [row["stage"] for row in previous]
+        if (video["status"] == "failed" and len(stages) == 2 and stages[0] == "failed"
+                and stages[1] in {"summary", "summary warning", "classification"}):
+            return resummarize(db, video_id, skill_file=skill_file, on_progress=on_progress)
         resume_translation = (
             video["status"] == "failed" and bool(video["language"]) and
-            [row["stage"] for row in previous] == ["failed", "translation"]
+            stages == ["failed", "translation"]
         )
         segment_rows = []
         if resume_translation:
@@ -175,6 +179,7 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         summary, claims = intelligence.summarize(
             segment_rows, frames, target_language=target,
             skill_text=skill_file.read_text(encoding="utf-8"), feedback=feedback,
+            on_warning=lambda detail: stage("summary warning", detail, 0.79),
             on_progress=(lambda done, total: on_progress(
                 "summary", 0.79 + 0.17 * done / total,
                 f"Summary call {done}/{total}") if on_progress else None))
@@ -205,9 +210,16 @@ def resummarize(db: sqlite3.Connection, video_id: str, *, skill_file: Path,
     with db:
         store.event(db, video_id, "summary", "Refreshing from stored evidence and feedback")
     feedback_rows = [dict(x) for x in db.execute("SELECT * FROM feedback ORDER BY id")]
+
+    def warning(detail: str) -> None:
+        if on_progress:
+            on_progress("summary warning", 0.85, detail)
+        with db:
+            store.event(db, video_id, "summary warning", detail)
+
     summary, claims = intelligence.summarize(
         video["segments"], video["frames"], target_language=video["target_language"],
-        skill_text=skill_file.read_text(encoding="utf-8"), feedback=feedback_rows,
+        skill_text=skill_file.read_text(encoding="utf-8"), feedback=feedback_rows, on_warning=warning,
         on_progress=(lambda done, total: on_progress(
             "summary", 0.85 + 0.12 * done / total, f"Summary call {done}/{total}"))
             if on_progress else None)

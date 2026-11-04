@@ -386,7 +386,8 @@ def read_frame(image: Path, *, on_progress=None, on_warning=None) -> str:
 
 def summarize(segments: list[dict], frames: list[dict], *, target_language: str,
               skill_text: str, feedback: list[dict],
-              on_progress: Callable[[int, int], None] | None = None) -> tuple[str, list[dict]]:
+              on_progress: Callable[[int, int], None] | None = None,
+              on_warning: Callable[[str], None] | None = None) -> tuple[str, list[dict]]:
     if not segments:
         raise ValueError("A summary requires transcript segments")
     rows = [{"id": f"s:{s['id']}", "start": s["start"],
@@ -409,11 +410,10 @@ def summarize(segments: list[dict], frames: list[dict], *, target_language: str,
     route = summary_router.current.get()
     input_size = sum(len(row["text"]) for row in rows)
     short_input = len(rows) <= 65 and input_size <= 6000
-    if route.method == "direct":
-        too_long = input_size > 60000 or len(rows) > 600 if route.backend == "api" else not short_input
-        if too_long:
-            raise ValueError("This transcript is too long for single-pass summarization. Choose Auto or Batched.")
-    if route.method == "direct" or (route.method == "auto" and short_input):
+    direct_fits = input_size <= 60000 and len(rows) <= 600 if route.backend == "api" else short_input
+    if route.method == "direct" and not direct_fits and on_warning:
+        on_warning("Transcript exceeds the single-pass limit. Continuing with batched summarization.")
+    if (route.method == "direct" and direct_fits) or (route.method == "auto" and short_input):
         summary_input = rows
         evidence_ids = {row["id"] for row in rows}
         total_calls = 1

@@ -9,6 +9,19 @@ from pva import intelligence, llama_runtime, store, summary_router, tasks
 
 
 class SummaryRouteTests(unittest.TestCase):
+    def test_oversized_quick_summary_uses_batches_and_reports_fallback(self):
+        rows = [{"id": i, "start": i, "text": "Source."} for i in range(1, 67)]
+        note = '{"notes":[{"text":"Source.","evidence":["s:1"]}]}'
+        final = '{"takeaway":{"text":"Source.","evidence":["s:1"]}}'
+        warnings = []
+        with summary_router.use(summary_router.SummaryRoute(method="direct")), patch.object(
+            intelligence, "chat", side_effect=[note, '{"notes":[]}', final]
+        ):
+            brief, _ = intelligence.summarize(rows, [], target_language="en",
+                                             skill_text="", feedback=[], on_warning=warnings.append)
+        self.assertEqual(brief, "Source.")
+        self.assertIn("batched", warnings[0])
+
     def test_llama_cpp_handles_all_text_steps_without_ollama(self):
         reply = {"choices": [{"message": {"content": "{}"}}], "usage": {"total_tokens": 4}}
         with summary_router.use(summary_router.SummaryRoute(backend="llama.cpp")), patch.object(
