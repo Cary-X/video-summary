@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from html import escape
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -73,10 +74,17 @@ def queue_summary(action, *args, **kwargs) -> bool:
     return True
 
 
-def navigate(page: str, message: str = "") -> None:
+def show_saved(message: str) -> None:
+    st.html(f"""<div class="raccoon-saved" role="status">
+      <img src="{artwork('raccoon-ok.webp')}" alt="Raccoon making an OK gesture">
+      <span>{escape(message)}</span>
+    </div>""")
+
+
+def navigate(page: str, message: str = "", *, saved: bool = False) -> None:
     st.session_state["raccoon_next_page"] = page
     if message:
-        st.session_state["raccoon_message"] = message
+        st.session_state["raccoon_message"] = (message, saved)
     st.rerun()
 
 
@@ -92,10 +100,14 @@ st.html(f"""<style>
 </header>""")
 if next_page := st.session_state.pop("raccoon_next_page", None):
     st.session_state["raccoon_nav"] = next_page
-page = st.radio("Main navigation", ["Add videos", "Agent activity", "Library", "Settings"],
+page = st.radio("Main navigation", ["Add videos", "Raccoon activity", "Library", "Settings"],
                 horizontal=True, label_visibility="collapsed", key="raccoon_nav")
-if message := st.session_state.pop("raccoon_message", None):
-    st.success(message)
+if notice := st.session_state.pop("raccoon_message", None):
+    message, saved = notice
+    if saved:
+        show_saved(message)
+    else:
+        st.success(message)
 
 
 def settings_page() -> None:
@@ -129,7 +141,7 @@ def settings_page() -> None:
                 if backend == "local":
                     chosen = {key: chosen[key] for key in ("backend", "method")}
                 save_preferences({f"summary_{key}": value for key, value in chosen.items()})
-                navigate("Settings", "Summary settings saved for new jobs.")
+                navigate("Settings", "Summary settings saved for new jobs.", saved=True)
             except ValueError as exc:
                 st.error(str(exc))
     st.caption("Translation and classification use local Ollama. DeepSeek handles photo identification "
@@ -150,10 +162,11 @@ def settings_page() -> None:
         if st.form_submit_button("Save reading and browser settings"):
             save_preferences({"summary_language": languages[language_choice],
                               "reading_size": selected_size, "youtube_cookie_browser": cookie_choice})
-            navigate("Settings", "Reading and browser settings saved.")
+            navigate("Settings", "Reading and browser settings saved.", saved=True)
 
     st.subheader("Storage location", anchor=False)
-    st.write("Your library, uploads, and saved screenshots are stored in this folder.")
+    st.write("Raccoon Agent creates a folder named `data` beside the app on first run. "
+             "Your library, uploads, and saved screenshots are stored there.")
     st.code(str(DATA), language=None)
     st.caption(f"Library database · {DB.name}")
 
@@ -171,7 +184,7 @@ if page == "Add videos":
     with illustration:
         st.html(f"""<aside class="raccoon-illustration">
           <img src="{artwork('raccoon-tv.webp')}" alt="A cartoon raccoon watching a television">
-          <p>Send me a video. I’ll find what matters.</p>
+          <p><span>Send me a video.</span><span>I’ll find what matters.</span></p>
         </aside>""")
     with intake.form("add_inputs", clear_on_submit=True):
         links = st.text_area("Video links (one per line)", height=125,
@@ -202,9 +215,9 @@ if page == "Add videos":
         manager.pump()
         if queued and not errors:
             st.session_state["raccoon_activity_next"] = "Finding"
-            navigate("Agent activity", f"Sent {queued} input(s) to Finding. Confirm a match to start a summary.")
+            navigate("Raccoon activity", f"Sent {queued} input(s) to Finding. Confirm a match to start a summary.")
         elif queued:
-            st.success(f"Sent {queued} input(s) to Finding in Agent activity.")
+            st.success(f"Sent {queued} input(s) to Finding in Raccoon activity.")
         elif not errors:
             st.info("Paste a link or upload a photo first.")
         for error in errors:
@@ -232,7 +245,7 @@ def finding_panel() -> None:
                 sent += 1
             if sent:
                 st.session_state["raccoon_activity_next"] = "Processing"
-                navigate("Agent activity", f"Sent {sent} video(s) to Processing.")
+                navigate("Raccoon activity", f"Sent {sent} video(s) to Processing.")
         if not rows:
             st.info("No videos to confirm yet. Start by adding a link or photo.")
             if st.button("Add links or photos", key="finding_add"):
@@ -285,7 +298,7 @@ def finding_panel() -> None:
                                      help="A verified original video is required before processing"):
                             if queue_summary(tasks.enqueue_processing, connection, row["id"], chosen, target_language):
                                 st.session_state["raccoon_activity_next"] = "Processing"
-                                navigate("Agent activity", "Video sent to Processing.")
+                                navigate("Raccoon activity", "Video sent to Processing.")
     finally:
         connection.close()
 
@@ -337,8 +350,8 @@ def processing_panel() -> None:
 
 
 activity = None
-if page == "Agent activity":
-    st.header("Agent activity", anchor=False)
+if page == "Raccoon activity":
+    st.header("Raccoon activity", anchor=False)
     st.write("Confirm the original in Finding. Follow each video in Processing.")
     if next_activity := st.session_state.pop("raccoon_activity_next", None):
         st.session_state["raccoon_activity"] = next_activity
@@ -424,11 +437,11 @@ if page == "Library":
                 note = st.text_input("What should improve next time?")
                 if st.form_submit_button("Save feedback"):
                     pipeline.feedback(db, video_id, rating, note)
-                    st.success("Feedback saved")
+                    show_saved("Feedback saved.")
             if st.button("Refresh summary using latest feedback"):
                 if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="resummarize"):
                     st.session_state["raccoon_activity_next"] = "Processing"
-                    navigate("Agent activity", "Summary refresh sent to Processing.")
+                    navigate("Raccoon activity", "Summary refresh sent to Processing.")
             existing_frames = {frame["segment_id"] for frame in video["frames"]}
             missing_visuals = [row for row in pipeline._visual_cues(video["segments"])
                                if row["id"] not in existing_frames]
@@ -450,12 +463,12 @@ if page == "Library":
             if not active and st.button("Queue this video for processing"):
                 if queue_summary(tasks.enqueue_processing_video, db, video_id):
                     st.session_state["raccoon_activity_next"] = "Processing"
-                    navigate("Agent activity", "Video sent to Processing.")
+                    navigate("Raccoon activity", "Video sent to Processing.")
         with st.expander("Processing trace"):
             for step in video["events"]:
                 st.write(f"{step['at']} · {step['stage']} · {step['detail']}")
 
-if page == "Agent activity" and activity == "Usage":
+if page == "Raccoon activity" and activity == "Usage":
     st.subheader("AI token usage")
     st.caption("Measured from model responses since usage tracking was enabled. "
                "Earlier calls cannot be reconstructed from the video records.")
