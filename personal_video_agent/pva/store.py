@@ -134,7 +134,7 @@ def record_ai_usage(db: sqlite3.Connection, *, video_id: str | None,
                      (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0))
     miss = max(0, int(usage.get("prompt_cache_miss_tokens") or max(0, prompt - hit)))
     low = high = None
-    if requested_model.startswith("Ollama · "):
+    if requested_model.startswith(("Ollama · ", "llama.cpp · ")):
         low = high = 0.0
     elif requested_model == "deepseek-flash":
         # DeepSeek public off-peak/peak USD prices per million tokens, 2026-10-20.

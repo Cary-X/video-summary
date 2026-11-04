@@ -72,6 +72,19 @@ def skip_processing(db: sqlite3.Connection, task_id: str) -> None:
               WHERE id=? AND status!='ready'""", (row["video_id"],))
 
 
+def retry_processing(db: sqlite3.Connection, task_id: str, *,
+                     summary_route: summary_router.SummaryRoute | None = None) -> None:
+    route = json.dumps(summary_route.register()) if summary_route is not None else None
+    with db:
+        changed = db.execute("""UPDATE processing_tasks
+            SET status='queued',stage='queued',progress=0,error=NULL,updated_at=?,
+                summary_route_json=COALESCE(?,summary_route_json)
+            WHERE id=? AND status='failed'""", (store.now(), route, task_id)).rowcount
+        if not changed:
+            raise ValueError("Only failed processing tasks can be retried.")
+        _task_event(db, "processing", task_id, "queued", "Retry requested")
+
+
 def _check_processing(db: sqlite3.Connection, task_id: str) -> None:
     row = db.execute("SELECT status FROM processing_tasks WHERE id=?", (task_id,)).fetchone()
     if row is None or row["status"] == "skipped":

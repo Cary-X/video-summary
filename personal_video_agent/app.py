@@ -11,7 +11,7 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image
 
-from pva import intelligence, media, pipeline, presentation, store, tasks, usage_visuals
+from pva import intelligence, llama_runtime, media, pipeline, presentation, store, tasks, usage_visuals
 from pva.summary_router import SummaryRoute
 
 
@@ -47,13 +47,15 @@ languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Han
              "Español": "es", "粵語": "yue"}
 sizes = {"Normal": 24, "Larger": 28, "Largest": 32}
 methods = {"auto": "Automatic", "direct": "Quick · single pass", "batched": "Detailed · batched"}
-backends = {"local": "Local Ollama", "api": "Custom API"}
+backends = {"llama.cpp": "Local llama.cpp", "local": "Local Ollama", "api": "Custom API"}
+ollama_model = intelligence.local_model()
 size_choice = prefs.get("reading_size", "Normal")
 if size_choice not in sizes:
     size_choice = "Normal"
 target_language = prefs.get("summary_language", "en")
 summary_route = SummaryRoute(
-    backend=prefs.get("summary_backend", "local"), method=prefs.get("summary_method", "auto"),
+    backend=prefs.get("summary_backend", "llama.cpp" if llama_runtime.available() else "local"),
+    method=prefs.get("summary_method", "auto"),
     base_url=prefs.get("summary_base_url", ""), model=prefs.get("summary_model", ""),
 )
 
@@ -131,20 +133,26 @@ def settings_page() -> None:
                                     help="The key is held in memory. Enter it again after the app restarts.")
             st.caption("The selected provider receives transcript excerpts and any extracted visual text "
                        "needed to write the summary. Provider charges may apply.")
+        elif backend == "llama.cpp":
+            st.caption(f"Loads {llama_runtime.paths()[1].name} automatically. "
+                       "Summaries, translation, and classification run on this computer.")
+            if not llama_runtime.available():
+                st.warning("Install the local runtime and model with setup-local-llama.ps1 first.")
         else:
-            st.caption(f"Uses {intelligence.local_model()} on this computer. Summary API cost is $0.")
+            st.caption(f"Uses {ollama_model} on this computer. Summary API cost is $0.")
         if st.form_submit_button("Save summary settings", type="primary"):
             try:
                 chosen = SummaryRoute(backend=backend, method=method, base_url=base_url,
                                       model=model, api_key=api_key).register()
-                if backend == "local":
+                if backend != "api":
                     chosen = {key: chosen[key] for key in ("backend", "method")}
                 save_preferences({f"summary_{key}": value for key, value in chosen.items()})
                 navigate("Settings", "Summary settings saved for new jobs.", saved=True)
             except ValueError as exc:
                 st.error(str(exc))
-    st.caption("Translation and classification use local Ollama. DeepSeek handles photo identification "
-               "and video match checks. Screenshot reading runs on this computer.")
+    st.caption("With llama.cpp selected, all text steps use the local GGUF model. Custom summary APIs "
+               "use Ollama for translation and classification. DeepSeek handles photo identification "
+               "and match checks. Screenshot reading runs locally.")
 
     st.subheader("Reading and YouTube", anchor=False)
     saved_browser = tasks.cookie_browser(db)
@@ -334,11 +342,14 @@ def processing_panel() -> None:
                 if row["status"] == "failed":
                     st.error(row["error"] or "Processing failed")
                     if st.button("Retry processing", key=f"retry-process-{row['id']}"):
-                        tasks._update(connection, "processing_tasks", row["id"],
-                                      status="queued", stage="queued", progress=0,
-                                      detail="Retry requested")
+                        tasks.retry_processing(connection, row["id"])
                         manager.pump()
                         st.rerun()
+                    if route.get("backend", "local") != summary_route.backend and st.button(
+                        f"Retry with {backends[summary_route.backend]}", key=f"retry-route-{row['id']}"
+                    ):
+                        if queue_summary(tasks.retry_processing, connection, row["id"]):
+                            st.rerun()
                 elif row["status"] == "ready":
                     st.success("Summary ready in Library")
                     if st.button("Read summary", key=f"open-library-{row['id']}"):
@@ -517,7 +528,7 @@ if page == "Raccoon activity" and activity == "Usage":
         c.metric("Input / output", f"{int(usage['prompt_tokens'].sum()):,} / "
                  f"{int(usage['completion_tokens'].sum()):,}")
         d.metric("Tracked cost estimate", f"${low:.6f} to ${high:.6f}")
-        st.caption("The estimate covers DeepSeek Flash. Local Ollama costs $0 in API fees. "
+        st.caption("The estimate covers DeepSeek Flash. Local inference costs $0 in API fees. "
                    "Custom summary API pricing is unavailable here; check your provider’s bill.")
         cost_daily = usage_visuals.complete_days(usage, [
             "estimated_cost_low_usd", "estimated_cost_high_usd"], period)
@@ -564,7 +575,7 @@ if page == "Raccoon activity" and activity == "Usage":
             "output_tokens": "Output tokens", "tokens": "Total tokens",
             "cost_low_usd": "Off-peak USD", "cost_high_usd": "Peak USD",
         }), hide_index=True)
-        st.caption("Token counts include local Ollama and provider usage. Summary steps use the engine "
+        st.caption("Token counts include local models and provider usage. Summary steps use the engine "
                    "chosen for each job. Earlier calls remain in the totals.")
         left, right = st.columns(2)
         with left:

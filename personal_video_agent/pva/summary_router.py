@@ -22,8 +22,8 @@ class SummaryRoute:
     api_key: str = field(default="", repr=False)
 
     def register(self) -> dict[str, str]:
-        if self.backend not in {"local", "api"}:
-            raise ValueError("Choose Local Ollama or a summary API.")
+        if self.backend not in {"local", "llama.cpp", "api"}:
+            raise ValueError("Choose llama.cpp, Local Ollama, or a summary API.")
         if self.method not in {"auto", "direct", "batched"}:
             raise ValueError("Choose Auto, Single pass, or Batched.")
         base_url = model = ""

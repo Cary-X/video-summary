@@ -5,10 +5,33 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
-from pva import intelligence, store, summary_router, tasks
+from pva import intelligence, llama_runtime, store, summary_router, tasks
 
 
 class SummaryRouteTests(unittest.TestCase):
+    def test_llama_cpp_handles_all_text_steps_without_ollama(self):
+        reply = {"choices": [{"message": {"content": "{}"}}], "usage": {"total_tokens": 4}}
+        with summary_router.use(summary_router.SummaryRoute(backend="llama.cpp")), patch.object(
+            llama_runtime.server, "complete", return_value=reply
+        ) as complete, patch.object(intelligence._local_opener, "open",
+                                   side_effect=AssertionError("Ollama was contacted")):
+            for purpose in ("summary", "summary notes", "translation", "classification"):
+                self.assertEqual(intelligence.chat([], purpose=purpose), "{}")
+        self.assertEqual(complete.call_count, 4)
+        for call in complete.call_args_list:
+            payload = call.args[0]
+            self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
+            self.assertEqual(payload["response_format"]["schema"]["type"], "object")
+
+    def test_llama_cpp_retries_on_cpu_after_gpu_start_failure(self):
+        worker = llama_runtime.LocalServer()
+        with patch.dict("os.environ", {"PVA_LLAMA_DEVICE": ""}), patch.object(
+            worker, "start", side_effect=[RuntimeError("GPU startup failed"), None]
+        ) as start, patch.object(worker, "request", return_value={"choices": []}):
+            self.assertEqual(worker.complete({}), {"choices": []})
+        self.assertEqual([call.args or tuple(call.kwargs.values()) for call in start.call_args_list],
+                         [(False,), (True,)])
+
     def test_api_job_persists_route_and_keeps_credential_out_of_sqlite(self):
         with tempfile.TemporaryDirectory() as temp:
             db_path = Path(temp) / "test.db"

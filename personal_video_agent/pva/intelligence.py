@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from collections.abc import Callable
 
-from . import store, summary_router, visual
+from . import llama_runtime, store, summary_router, visual
 from .media import same_language
 
 
@@ -178,6 +178,22 @@ def _local_chat(messages: list[dict], purpose: str) -> str:
     required = ["takeaway", "key_points", "caveats"] if purpose == "summary" else list(fields)
     schema = {"type": "object", "properties": fields, "required": required,
               "additionalProperties": False}
+    if summary_router.current.get().backend == "llama.cpp":
+        model = llama_runtime.paths()[1].stem
+        output = llama_runtime.server.complete({
+            "model": model, "messages": messages, "stream": False,
+            "temperature": 0.1, "max_tokens": limits[purpose],
+            "chat_template_kwargs": {"enable_thinking": False},
+            "response_format": {"type": "json_object", "schema": schema},
+        })
+        choice = output["choices"][0]
+        content = choice["message"].get("content")
+        _record_usage(purpose, f"llama.cpp · {model}", f"llama.cpp · {model}", output.get("usage") or {})
+        if choice.get("finish_reason") == "length":
+            raise RuntimeError(f"Local {model} output reached its limit during {purpose}.")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(f"Local {model} returned an empty answer during {purpose}.")
+        return content
     payload = {"model": model, "messages": messages, "format": schema,
                "stream": False, "think": False, "keep_alive": "3m",
                "options": {"temperature": 0.1, "num_ctx": 8192,
@@ -350,7 +366,7 @@ def summarize(segments: list[dict], frames: list[dict], *, target_language: str,
     input_size = sum(len(row["text"]) for row in rows)
     short_input = len(rows) <= 65 and input_size <= 6000
     if route.method == "direct":
-        too_long = not short_input if route.backend == "local" else input_size > 60000 or len(rows) > 600
+        too_long = input_size > 60000 or len(rows) > 600 if route.backend == "api" else not short_input
         if too_long:
             raise ValueError("This transcript is too long for single-pass summarization. Choose Auto or Batched.")
     if route.method == "direct" or (route.method == "auto" and short_input):
