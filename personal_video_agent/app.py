@@ -45,12 +45,12 @@ manager.pump()
 prefs = dict(db.execute("SELECT key,value FROM preferences"))
 languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Hant",
              "Español": "es", "粵語": "yue"}
-sizes = {"Standard": 16, "Large": 20, "Extra large": 24}
+sizes = {"Normal": 24, "Larger": 28, "Largest": 32}
 methods = {"auto": "Automatic", "direct": "Quick · single pass", "batched": "Detailed · batched"}
 backends = {"local": "Local Ollama", "api": "Custom API"}
-size_choice = prefs.get("reading_size", "Standard")
+size_choice = prefs.get("reading_size", "Normal")
 if size_choice not in sizes:
-    size_choice = "Standard"
+    size_choice = "Normal"
 target_language = prefs.get("summary_language", "en")
 summary_route = SummaryRoute(
     backend=prefs.get("summary_backend", "local"), method=prefs.get("summary_method", "auto"),
@@ -90,8 +90,7 @@ def navigate(page: str, message: str = "", *, saved: bool = False) -> None:
 
 st.html(ASSETS / "raccoon.css")
 st.html(f"""<style>
-.stApp [data-testid="stMarkdownContainer"] :is(p, li),
-.stApp [data-testid="stWidgetLabel"] p {{ font-size: {sizes[size_choice]}px; line-height: 1.5; }}
+.stApp {{ --reading-size: {sizes[size_choice]}px; }}
 </style>
 <header class="raccoon-brand">
   <img src="{artwork('raccoon-logo.webp')}" alt="" width="68" height="68">

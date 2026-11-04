@@ -6,7 +6,27 @@
   --section-fill: #eacaa7;
   --section-edge: #8b6243;
   --section-paper: #f8ebd8;
+  --reading-size: 24px;
+  --control-size: calc(var(--reading-size) - 4px);
+  --caption-size: calc(var(--reading-size) - 6px);
   font-family: "Trebuchet MS", system-ui, sans-serif;
+}
+.stApp [data-testid="stMarkdownContainer"] :is(p, li),
+.stApp [data-testid="stWidgetLabel"] p {
+  font-size: var(--reading-size); line-height: 1.45;
+}
+.stApp :is(button, [role="combobox"], [data-testid="stTextInput"] input,
+            [data-testid="stTextArea"] textarea, [data-testid="stExpander"] summary) {
+  font-size: var(--control-size); line-height: 1.4;
+}
+.stApp :is(button, [data-testid="stLinkButton"] a,
+            [data-testid="stRadioGroup"] label, [data-testid="stExpander"] summary) p,
+.stApp [data-testid="stSelectbox"] [role="combobox"] {
+  font-size: var(--control-size); line-height: 1.4;
+}
+.stApp [data-testid="stCaptionContainer"] :is(p, span),
+.stApp [data-testid="stFileUploaderDropzone"] small {
+  font-size: var(--caption-size); line-height: 1.45;
 }
 .stApp:has(.st-key-raccoon_nav [role="radiogroup"] > :nth-child(2) input:checked) {
   --section-fill: #d4d8bb; --section-edge: #62684b; --section-paper: #eef0de;
@@ -33,7 +53,7 @@
   box-shadow: 2px 3px 0 #d9bb94;
 }
 .raccoon-brand h1 { margin: .35rem 0 .15rem; padding: 0; font-size: clamp(2rem, 6vw, 3rem); }
-.raccoon-brand p { margin: 0; color: #654833; }
+.raccoon-brand p { margin: 0; color: #654833; font-size: var(--control-size); }
 .st-key-raccoon_nav { align-self: center; max-width: 100%; }
 .st-key-raccoon_nav [role="radiogroup"] { justify-content: center; gap: .45rem; flex-wrap: wrap; }
 .st-key-raccoon_nav [role="radiogroup"] label {
@@ -83,7 +103,7 @@
   display: grid; place-items: center; flex: 0 0 1.5rem; height: 1.5rem;
   background: #684330; color: #fffaf2; border-radius: 50%; font-size: .85rem;
 }
-.raccoon-steps span { font-size: .95rem; font-weight: 650; }
+.raccoon-steps span { font-size: var(--caption-size); font-weight: 650; }
 .raccoon-illustration img {
   width: 100%; display: block; border: 2px solid #61432e;
   border-radius: 1.1rem; box-shadow: 3px 4px 0 #dcc4a6;
@@ -133,7 +153,7 @@
 .stApp [data-testid="stFileUploaderDropzone"] {
   border: 1px dashed var(--section-edge); border-radius: .8rem;
 }
-.stApp .st-key-library_list [class*="st-key-library_row_"] h3 { font-size: 1.2rem; }
+.stApp .st-key-library_list [class*="st-key-library_row_"] h3 { font-size: var(--reading-size); }
 .stApp button[kind="primary"], .stApp button[kind="secondary"], .stApp a[data-testid="stLinkButton"] {
   border-radius: .8rem; min-height: 2.55rem;
 }
@@ -162,6 +182,9 @@
   [data-testid="stMainBlockContainer"] { padding-top: 3.7rem; }
   .raccoon-steps { gap: .3rem; }
   .raccoon-steps div { padding: .4rem; gap: .25rem; }
-  .raccoon-steps span { font-size: .78rem; }
+  .raccoon-steps span { font-size: var(--caption-size); overflow-wrap: anywhere; }
   .st-key-raccoon_nav [role="radiogroup"] { gap: .3rem; }
+}
+@media (max-width: 420px) {
+  .raccoon-steps { grid-template-columns: 1fr; }
 }
