@@ -49,6 +49,12 @@ languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Han
 sizes = {"Normal": 24, "Larger": 28, "Largest": 32}
 methods = {"auto": "Automatic", "direct": "Quick · single pass", "batched": "Detailed · batched"}
 backends = {"llama.cpp": "Local llama.cpp", "api": "Custom API"}
+api_providers = {
+    "DeepSeek": "https://api.deepseek.com",
+    "OpenAI": "https://api.openai.com/v1",
+    "OpenRouter": "https://openrouter.ai/api/v1",
+    "Other provider": "",
+}
 intelligence._load_env()
 saved_backend = prefs.get("summary_backend", "llama.cpp")
 size_choice = prefs.get("reading_size", "Normal")
@@ -131,18 +137,45 @@ def settings_page() -> None:
                        index=list(backends).index(summary_route.backend), format_func=labels.get,
                        horizontal=True)
     base_url, api_key, model = "", "", ""
+    provider = None
     if backend == "api":
         def clear_api_key() -> None:
             st.session_state.pop("summary_api_key_input", None)
 
+        def clear_api_draft() -> None:
+            clear_api_key()
+            st.session_state.pop("summary_api_model_input", None)
+            st.session_state.pop("summary_api_url_input", None)
+
         if st.session_state.pop("clear_summary_api_key", False):
             clear_api_key()
-        base_url = st.text_input("API base URL", value=summary_route.base_url,
-                                 placeholder="https://your-provider.example/v1",
-                                 key="summary_api_url_input", on_change=clear_api_key)
-        api_key = st.text_input("API key", type="password", key="summary_api_key_input",
-                                help="The key is held in memory. Enter it again after the app restarts.")
-        if base_url.strip():
+        saved_url = summary_route.base_url.rstrip("/")
+        saved_provider = next((name for name, url in api_providers.items() if url and url == saved_url), None)
+        if saved_url == "https://api.deepseek.com/v1":
+            saved_provider = "DeepSeek"
+        if saved_url and saved_provider is None:
+            saved_provider = "Other provider"
+        providers = list(api_providers)
+        provider = st.selectbox("API provider", providers,
+                                index=providers.index(saved_provider) if saved_provider else None,
+                                placeholder="Choose your API provider",
+                                key="summary_api_provider_input", on_change=clear_api_draft)
+        if provider == "Other provider":
+            def on_url_change() -> None:
+                clear_api_key()
+                st.session_state.pop("summary_api_model_input", None)
+
+            base_url = st.text_input("API base URL", value=saved_url if provider == saved_provider else "",
+                                     placeholder="https://your-provider.example/v1",
+                                     key="summary_api_url_input", on_change=on_url_change)
+        elif provider:
+            base_url = saved_url if provider == saved_provider else api_providers[provider]
+        same_endpoint = bool(saved_url) and base_url.strip().rstrip("/") == saved_url
+        if provider:
+            api_key = st.text_input("API key", type="password", key="summary_api_key_input",
+                                    help="The key is held in memory. Enter it again after the app restarts.")
+        if base_url.strip() and (provider == "Other provider" or api_key.strip() or
+                                 (same_endpoint and api_configured)):
             lookup = (base_url.strip().rstrip("/"), hashlib.sha256(api_key.strip().encode()).digest(),
                       summary_route.model)
             refresh_models = st.button("Refresh model list")
@@ -167,9 +200,10 @@ def settings_page() -> None:
                              key=picker_key, on_change=copy_suggestion)
             elif message := st.session_state["summary_api_model_message"]:
                 st.caption(message + " You can enter a model ID manually.")
-        model = st.text_input("API model name", value=summary_route.model,
-                              placeholder="Select above or enter a model ID",
-                              key="summary_api_model_input")
+        if provider:
+            model = st.text_input("API model name", value=summary_route.model if same_endpoint else "",
+                                  placeholder="Select above or enter a model ID",
+                                  key="summary_api_model_input")
 
     with st.form("summary_settings"):
         method = st.selectbox("How should the agent summarize?", list(methods),
@@ -183,6 +217,8 @@ def settings_page() -> None:
             st.warning("Install the local runtime and model with setup-local-llama.ps1 first.")
         if st.form_submit_button("Save summary settings", type="primary"):
             try:
+                if backend == "api" and not provider:
+                    raise ValueError("Choose an API provider.")
                 chosen = SummaryRoute(backend=backend, method=method, base_url=base_url,
                                       model=model, api_key=api_key).register()
                 if backend != "api":
