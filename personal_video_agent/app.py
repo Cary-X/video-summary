@@ -48,14 +48,15 @@ languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Han
              "Español": "es", "粵語": "yue"}
 sizes = {"Normal": 24, "Larger": 28, "Largest": 32}
 methods = {"auto": "Automatic", "direct": "Quick · single pass", "batched": "Detailed · batched"}
-backends = {"llama.cpp": "Local llama.cpp", "local": "Local Ollama", "api": "Custom API"}
-ollama_model = intelligence.local_model()
+backends = {"llama.cpp": "Local llama.cpp", "api": "Custom API"}
+intelligence._load_env()
+saved_backend = prefs.get("summary_backend", "llama.cpp")
 size_choice = prefs.get("reading_size", "Normal")
 if size_choice not in sizes:
     size_choice = "Normal"
 target_language = prefs.get("summary_language", "en")
 summary_route = SummaryRoute(
-    backend=prefs.get("summary_backend", "llama.cpp" if llama_runtime.available() else "local"),
+    backend=saved_backend if saved_backend in backends else "llama.cpp",
     method=prefs.get("summary_method", "auto"),
     base_url=prefs.get("summary_base_url", ""), model=prefs.get("summary_model", ""),
 )
@@ -115,8 +116,19 @@ if notice := st.session_state.pop("raccoon_message", None):
 def settings_page() -> None:
     st.header("Settings", anchor=False)
     st.subheader("Summary engine", anchor=False)
+    local_installed = llama_runtime.available()
+    try:
+        SummaryRoute(backend="api", base_url=summary_route.base_url,
+                     model=summary_route.model).register()
+        api_configured = True
+    except ValueError:
+        api_configured = False
+    labels = {
+        "llama.cpp": f"Local llama.cpp（{'已安装' if local_installed else '未安装'}）",
+        "api": f"Custom API（{'已配置' if api_configured else '未配置'}）",
+    }
     backend = st.radio("Where should summaries be written?", list(backends),
-                       index=list(backends).index(summary_route.backend), format_func=backends.get,
+                       index=list(backends).index(summary_route.backend), format_func=labels.get,
                        horizontal=True)
     with st.form("summary_settings", clear_on_submit=True):
         method = st.selectbox("How should the agent summarize?", list(methods),
@@ -134,13 +146,8 @@ def settings_page() -> None:
                                     help="The key is held in memory. Enter it again after the app restarts.")
             st.caption("The selected provider receives transcript excerpts and any extracted visual text "
                        "needed to write the summary. Provider charges may apply.")
-        elif backend == "llama.cpp":
-            st.caption(f"Loads {llama_runtime.paths()[1].name} automatically. "
-                       "Summaries, translation, and classification run on this computer.")
-            if not llama_runtime.available():
-                st.warning("Install the local runtime and model with setup-local-llama.ps1 first.")
-        else:
-            st.caption(f"Uses {ollama_model} on this computer. Summary API cost is $0.")
+        elif not local_installed:
+            st.warning("Install the local runtime and model with setup-local-llama.ps1 first.")
         if st.form_submit_button("Save summary settings", type="primary"):
             try:
                 chosen = SummaryRoute(backend=backend, method=method, base_url=base_url,
@@ -151,10 +158,6 @@ def settings_page() -> None:
                 navigate("Settings", "Summary settings saved for new jobs.", saved=True)
             except ValueError as exc:
                 st.error(str(exc))
-    st.caption("With llama.cpp selected, all text steps use the local GGUF model. Custom summary APIs "
-               "use Ollama for translation and classification. DeepSeek handles photo identification "
-               "and match checks. Screenshot reading uses the configured vision backend.")
-
     st.subheader("Reading and YouTube", anchor=False)
     saved_browser = tasks.cookie_browser(db)
     browsers = ["auto", "firefox", "chrome", "edge", ""]
@@ -328,7 +331,7 @@ def processing_panel() -> None:
                 st.subheader(row["title"], anchor=False)
                 st.caption(f"{row['status']} · {row['stage']}")
                 route = json.loads(row.get("summary_route_json") or "{}")
-                st.caption("Summary · " + backends.get(route.get("backend"), backends["local"]) +
+                st.caption("Summary · " + backends.get(route.get("backend"), "Legacy local engine") +
                            " · " + methods.get(route.get("method"), methods["auto"]))
                 st.progress(float(row["progress"]), text=row["stage"])
                 if st.button("Delete from Processing", key=f"delete-process-{row['id']}",
