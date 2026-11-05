@@ -188,3 +188,7 @@
 @media (max-width: 420px) {
   .raccoon-steps { grid-template-columns: 1fr; }
 }
+.pva-visual-table { overflow-x: auto; margin-block: .6rem; }
+.pva-visual-table table { width: max-content; max-width: 100%; border-collapse: collapse; }
+.pva-visual-table :is(th, td) { padding: .35rem .6rem; border: 1px solid #b3a2b0; text-align: left; }
+.pva-visual-table th { background: #f3e9f1; }

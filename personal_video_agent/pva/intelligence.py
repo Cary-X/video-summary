@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from collections.abc import Callable
 
-from . import llama_runtime, store, summary_router, visual
+from . import llama_runtime, store, summary_router, visual, visual_evidence
 from .media import same_language
 
 
@@ -245,7 +245,7 @@ def chat(messages: list[dict], *, vision: bool = False, purpose: str = "other") 
                 raise RuntimeError("The summary API returned an empty answer.")
             return content
         return _local_chat(messages, purpose)
-    if purpose not in {"photo identification", "match checking"}:
+    if purpose not in {"photo identification", "match checking", "frame reading"}:
         raise ValueError(f"Unsupported AI step: {purpose}")
     _load_env()
     base = os.getenv("PVA_LLM_BASE_URL") or os.getenv("LLM_BASE_URL") or ""
@@ -261,8 +261,11 @@ def chat(messages: list[dict], *, vision: bool = False, purpose: str = "other") 
         raise RuntimeError("Missing " + ", ".join(missing) +
                            " in personal_video_agent/.env. Paste your DeepSeek key "
                            "after PVA_LLM_API_KEY= to enable AI calls.")
-    body = json.dumps({"model": model, "messages": messages,
-                       "temperature": 0.1}).encode("utf-8")
+    payload = {"model": model, "messages": messages, "temperature": 0.1}
+    if purpose == "frame reading" and host == "api.deepseek.com":
+        payload.update(response_format={"type": "json_object"}, thinking={"type": "disabled"},
+                       max_tokens=2200)
+    body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
                                      headers={"Authorization": "Bearer " + key,
                                               "Content-Type": "application/json"})
@@ -367,16 +370,55 @@ def translate(segments: list[dict], source_language: str, target_language: str,
     return translated
 
 
+def read_vision_api(image: Path) -> tuple[dict, str]:
+    messages = visual_evidence.messages(image)
+    _load_env()
+    if not os.getenv("PVA_VISION_API_BASE_URL"):
+        host = urlparse(os.getenv("PVA_LLM_BASE_URL") or os.getenv("LLM_BASE_URL") or "").hostname
+        if host != "api.deepseek.com":
+            raise ValueError("Set PVA_VISION_API_BASE_URL and a vision-capable model in .env.")
+        result = _json(chat(messages, vision=True, purpose="frame reading"))
+        visual_evidence.format_result(result)
+        return result, "deepseek-flash"
+    route = summary_router.SummaryRoute(
+        backend="api", base_url=os.getenv("PVA_VISION_API_BASE_URL", ""),
+        model=os.getenv("PVA_VISION_API_MODEL", ""), api_key=os.getenv("PVA_VISION_API_KEY", ""),
+    )
+    registered = summary_router.SummaryRoute(**route.register())
+    response = summary_router.complete(registered, messages)
+    model = registered.model
+    if isinstance(response.get("usage"), dict):
+        _record_usage("frame reading", model, str(response.get("model") or model), response["usage"])
+    try:
+        choice = response["choices"][0]
+        content = choice["message"]["content"]
+        if choice.get("finish_reason") == "length":
+            raise ValueError("Vision output exceeded the response limit.")
+        if not isinstance(content, str):
+            raise ValueError("Vision model returned no readable evidence.")
+        result = _json(content)
+        visual_evidence.format_result(result)
+        return result, model
+    except (KeyError, IndexError, TypeError):
+        raise ValueError("Vision model returned an invalid completion.") from None
+
+
 def read_frame(image: Path, *, on_progress=None, on_warning=None) -> str:
     _load_env()
     context = _usage_context.get()
     db_path, video_id, finding_task_id = context or (visual.ROOT / "data" / "personal.db", None, None)
+    backend = os.getenv("PVA_FRAME_READER", "paddle").casefold()
     try:
+        if backend == "api":
+            if on_progress:
+                on_progress("Reading the screenshot with the configured vision model")
+            result, model = read_vision_api(image)
+            return f"{model} visual evidence:\n" + visual_evidence.format_result(result)
         result = visual.read(image, db_path=db_path, video_id=video_id,
                              finding_task_id=finding_task_id, on_progress=on_progress)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         if on_warning:
-            on_warning(f"Local visual reading failed: {exc}")
+            on_warning(f"Visual reading failed: {exc}")
         ocr = local_ocr(image)
         if ocr:
             return "RapidOCR text only; chart structure and visual details are unverified.\n" + ocr
@@ -393,7 +435,7 @@ def summarize(segments: list[dict], frames: list[dict], *, target_language: str,
     rows = [{"id": f"s:{s['id']}", "start": s["start"],
              "text": s.get("translated_text") or s["text"]} for s in segments]
     rows += [{"id": f"f:{f['id']}", "start": f["at_seconds"],
-              "text": f["extracted_text"]} for f in frames if f["extracted_text"]]
+              "text": visual_evidence.render(f["extracted_text"])} for f in frames if f["extracted_text"]]
 
     def extract_notes(batch: list[dict], allowed: set[str]) -> list[dict]:
         result = _json(chat([

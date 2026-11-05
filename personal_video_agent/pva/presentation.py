@@ -8,6 +8,8 @@ from html import escape
 
 from markdown_it import MarkdownIt
 
+from . import visual_evidence
+
 
 _EVIDENCE_SUFFIX = re.compile(r"\s*\((?:(?:s|f):\d+(?:,\s*)?)+\)\s*$")
 _VIDEO_DATE = re.compile(r"(\d{4})[-/.]?(\d{2})[-/.]?(\d{2})")
@@ -99,8 +101,8 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
         for group in matched:
             source_parts.append(f'<p>{escape(group["text"])}</p>')
         for frame in matched_frames:
-            source_parts.append('<p><strong>Visual evidence</strong>'
-                                f'<br>{escape(frame["extracted_text"])}</p>')
+            source_parts.append('<section><strong>Visual evidence</strong><br>'
+                                + visual_evidence.render(frame["extracted_text"], html=True) + '</section>')
         bullet = line.startswith("- ")
         body = markdown.render(line[2:] if bullet else line)
         marker = ""
@@ -132,6 +134,8 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
   border:1px solid #647783; border-radius:8px; box-shadow:0 8px 28px #0003;
   font-size:.9em; line-height:1.5; }}
 .pva-source-panel p {{ margin:.8em 0 0; font-size:inherit !important; }}
+.pva-source-panel table {{ border-collapse:collapse; margin:.55em 0; }}
+.pva-source-panel :is(th,td) {{ border:1px solid #b3a2b0; padding:.3em .5em; text-align:left; }}
 .pva-source-hint {{ display:block; font-size:.8em; opacity:.65; margin-top:3px; }}
 </style><div class="pva-summary">{"".join(parts)}</div>"""
 

@@ -13,6 +13,7 @@ from PIL import Image
 
 from pva import intelligence, llama_runtime, media, pipeline, presentation, store, tasks, usage_visuals
 from pva.summary_router import SummaryRoute
+from pva import visual_evidence
 
 
 ROOT = Path(__file__).resolve().parent
@@ -152,7 +153,7 @@ def settings_page() -> None:
                 st.error(str(exc))
     st.caption("With llama.cpp selected, all text steps use the local GGUF model. Custom summary APIs "
                "use Ollama for translation and classification. DeepSeek handles photo identification "
-               "and match checks. Screenshot reading runs locally.")
+               "and match checks. Screenshot reading uses the configured vision backend.")
 
     st.subheader("Reading and YouTube", anchor=False)
     saved_browser = tasks.cookie_browser(db)
@@ -470,11 +471,12 @@ if page == "Library":
                     for frame in video["frames"]:
                         st.image(frame["image_path"],
                                  caption=presentation.timestamp(frame["at_seconds"]))
-                        st.write(frame["extracted_text"] or "No readable visual text")
+                        st.html(visual_evidence.render(
+                            frame["extracted_text"] or "No readable visual text", html=True))
                 active_visual = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
                   AND status IN ('queued','running') LIMIT 1""", (video_id,)).fetchone()
                 if st.button("Reread saved screenshots", disabled=bool(active_visual),
-                             help="Reads saved screenshots locally and uses your chosen engine to refresh the summary."):
+                             help="Reads saved screenshots again and uses your chosen engine to refresh the summary."):
                     if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="reread_visual"):
                         st.success("Saved screenshots sent to Processing")
             with st.form("feedback"):
