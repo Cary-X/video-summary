@@ -124,8 +124,8 @@ def settings_page() -> None:
     except ValueError:
         api_configured = False
     labels = {
-        "llama.cpp": f"Local llama.cpp（{'已安装' if local_installed else '未安装'}）",
-        "api": f"Custom API（{'已配置' if api_configured else '未配置'}）",
+        "llama.cpp": f"Local llama.cpp ({'Installed' if local_installed else 'Not installed'})",
+        "api": f"Custom API ({'Configured' if api_configured else 'Not configured'})",
     }
     backend = st.radio("Where should summaries be written?", list(backends),
                        index=list(backends).index(summary_route.backend), format_func=labels.get,
