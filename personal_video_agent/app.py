@@ -49,12 +49,34 @@ languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Han
 sizes = {"Normal": 24, "Larger": 28, "Largest": 32}
 methods = {"auto": "Automatic", "direct": "Quick · single pass", "batched": "Detailed · batched"}
 backends = {"llama.cpp": "Local llama.cpp", "api": "Custom API"}
-api_providers = {
+api_providers = dict(sorted({
+    "Alibaba Cloud (Qwen · Beijing)": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "Alibaba Cloud (Qwen · Singapore)": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "Anthropic (Claude)": "https://api.anthropic.com/v1",
+    "Baidu (Qianfan)": "https://qianfan.baidubce.com/v2",
+    "Cerebras": "https://api.cerebras.ai/v1",
+    "Cohere": "https://api.cohere.ai/compatibility/v1",
     "DeepSeek": "https://api.deepseek.com",
+    "Fireworks AI": "https://api.fireworks.ai/inference/v1",
+    "Google (Gemini)": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "Groq": "https://api.groq.com/openai/v1",
+    "Kimi (Moonshot · China)": "https://api.moonshot.cn/v1",
+    "Kimi (Moonshot · International)": "https://api.moonshot.ai/v1",
+    "MiniMax (China)": "https://api.minimax.cn/v1",
+    "MiniMax (International)": "https://api.minimax.io/v1",
+    "Mistral AI": "https://api.mistral.ai/v1",
     "OpenAI": "https://api.openai.com/v1",
     "OpenRouter": "https://openrouter.ai/api/v1",
     "Other provider": "",
-}
+    "SiliconFlow (China)": "https://api.siliconflow.cn/v1",
+    "SiliconFlow (International)": "https://api.siliconflow.com/v1",
+    "Tencent (Hunyuan)": "https://api.hunyuan.cloud.tencent.com/v1",
+    "Together AI": "https://api.together.ai/v1",
+    "Volcengine (Doubao)": "https://ark.cn-beijing.volces.com/api/v3",
+    "xAI (Grok)": "https://api.x.ai/v1",
+    "Z.AI (GLM · International)": "https://api.z.ai/api/paas/v4",
+    "Zhipu AI (GLM · China)": "https://open.bigmodel.cn/api/paas/v4",
+}.items(), key=lambda item: item[0].casefold()))
 intelligence._load_env()
 saved_backend = prefs.get("summary_backend", "llama.cpp")
 size_choice = prefs.get("reading_size", "Normal")
@@ -159,7 +181,9 @@ def settings_page() -> None:
         provider = st.selectbox("API provider", providers,
                                 index=providers.index(saved_provider) if saved_provider else None,
                                 placeholder="Choose your API provider",
-                                key="summary_api_provider_input", on_change=clear_api_draft)
+                                key="summary_api_provider_input", on_change=clear_api_draft,
+                                help="Listed A–Z. Choose the region that issued your API key. "
+                                     "Use Other provider for a private endpoint or an unlisted service.")
         if provider == "Other provider":
             def on_url_change() -> None:
                 clear_api_key()
