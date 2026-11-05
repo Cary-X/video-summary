@@ -12,7 +12,7 @@ import streamlit as st
 from PIL import Image
 
 from pva import intelligence, llama_runtime, media, pipeline, presentation, store, tasks, usage_visuals
-from pva.summary_router import SummaryRoute
+from pva.summary_router import SummaryRoute, list_models
 from pva import visual_evidence
 
 
@@ -130,20 +130,53 @@ def settings_page() -> None:
     backend = st.radio("Where should summaries be written?", list(backends),
                        index=list(backends).index(summary_route.backend), format_func=labels.get,
                        horizontal=True)
-    with st.form("summary_settings", clear_on_submit=True):
+    base_url, api_key, model = "", "", ""
+    if backend == "api":
+        def clear_api_key() -> None:
+            st.session_state.pop("summary_api_key_input", None)
+
+        if st.session_state.pop("clear_summary_api_key", False):
+            clear_api_key()
+        base_url = st.text_input("API base URL", value=summary_route.base_url,
+                                 placeholder="https://your-provider.example/v1",
+                                 key="summary_api_url_input", on_change=clear_api_key)
+        api_key = st.text_input("API key", type="password", key="summary_api_key_input",
+                                help="The key is held in memory. Enter it again after the app restarts.")
+        if base_url.strip():
+            lookup = (base_url.strip().rstrip("/"), hashlib.sha256(api_key.strip().encode()).digest(),
+                      summary_route.model)
+            refresh_models = st.button("Refresh model list")
+            if st.session_state.get("summary_model_lookup") != lookup or refresh_models:
+                try:
+                    models = list_models(base_url, api_key, saved_model=summary_route.model)
+                    message = "" if models else "This API returned an empty model list."
+                except (ValueError, RuntimeError) as exc:
+                    models, message = [], str(exc)
+                st.session_state.update(summary_model_lookup=lookup,
+                                        summary_api_models=models, summary_api_model_message=message)
+            models = st.session_state["summary_api_models"]
+            if models:
+                picker_key = "summary_api_suggestion_" + hashlib.sha256(lookup[0].encode()).hexdigest()
+
+                def copy_suggestion() -> None:
+                    model_id = st.session_state[picker_key]
+                    if model_id is not None:
+                        st.session_state["summary_api_model_input"] = model_id
+
+                st.selectbox("Available models", models, index=None, placeholder="Choose a suggested model",
+                             key=picker_key, on_change=copy_suggestion)
+            elif message := st.session_state["summary_api_model_message"]:
+                st.caption(message + " You can enter a model ID manually.")
+        model = st.text_input("API model name", value=summary_route.model,
+                              placeholder="Select above or enter a model ID",
+                              key="summary_api_model_input")
+
+    with st.form("summary_settings"):
         method = st.selectbox("How should the agent summarize?", list(methods),
                               index=list(methods).index(summary_route.method), format_func=methods.get)
         st.caption("Automatic adapts to transcript length. Quick writes in one pass when the transcript fits. "
                    "Detailed collects evidence in batches before writing.")
-        base_url, model, api_key = "", "", ""
         if backend == "api":
-            base_url = st.text_input("API base URL", value=summary_route.base_url,
-                                     placeholder="https://your-provider.example/v1",
-                                     help="Use the OpenAI-compatible base URL from your provider.")
-            model = st.text_input("API model name", value=summary_route.model,
-                                  placeholder="Enter your provider's model ID")
-            api_key = st.text_input("API key", type="password",
-                                    help="The key is held in memory. Enter it again after the app restarts.")
             st.caption("The selected provider receives transcript excerpts and any extracted visual text "
                        "needed to write the summary. Provider charges may apply.")
         elif not local_installed:
@@ -155,6 +188,8 @@ def settings_page() -> None:
                 if backend != "api":
                     chosen = {key: chosen[key] for key in ("backend", "method")}
                 save_preferences({f"summary_{key}": value for key, value in chosen.items()})
+                if backend == "api":
+                    st.session_state["clear_summary_api_key"] = True
                 navigate("Settings", "Summary settings saved for new jobs.", saved=True)
             except ValueError as exc:
                 st.error(str(exc))
