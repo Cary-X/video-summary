@@ -1,6 +1,11 @@
 streamlit>=1.36
 pypdf>=5
 python-docx>=1.1
+pdfplumber>=0.11
+pypdfium2>=4.30
+beautifulsoup4>=4.12
+trafilatura>=2.0
+requests>=2.32
 pandas>=2.0
 altair>=5.0
 yt-dlp>=2024.1

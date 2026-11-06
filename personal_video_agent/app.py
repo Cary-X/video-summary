@@ -13,7 +13,7 @@ from PIL import Image
 
 from pva import intelligence, llama_runtime, media, pipeline, presentation, store, tasks, usage_visuals
 from pva.summary_router import SummaryRoute, list_models
-from pva import visual_evidence, uploads
+from pva import visual_evidence, uploads, web_sources
 
 
 ROOT = Path(__file__).resolve().parent
@@ -333,9 +333,10 @@ if page == "Add videos":
         files = st.file_uploader("Upload audio or documents", type=uploads.EXTENSIONS,
                                   accept_multiple_files=True,
                                   help="Audio: MP3, WAV, M4A, AAC, FLAC, OGG, OPUS, WMA. "
-                                       "Documents: PDF with selectable text, DOCX, TXT, MD.")
+                                       "Documents: PDF (including scans), DOCX, TXT, MD.")
         st.caption("Files go directly to Processing. Audio is transcribed locally; document text "
-                   "is summarized in your selected language. Scanned PDFs need a searchable text layer.")
+                   "is summarized in your selected language. Scanned pages and document images use "
+                   "your configured visual reader; API OCR may incur charges.")
         process_files = st.form_submit_button("Process uploaded files", type="primary")
     if process_files:
         queued, errors = 0, []
@@ -354,6 +355,31 @@ if page == "Add videos":
             st.success(f"Sent {queued} file(s) to Processing.")
         if not files:
             st.info("Upload an audio or document file first.")
+        for error in errors:
+            st.error(error)
+    st.subheader("Webpages and PDF links", anchor=False)
+    with st.form("web_sources", clear_on_submit=True):
+        webpage_urls = st.text_area("Webpage URLs (one per line)",
+                                   placeholder="https://example.com/article")
+        st.caption("Import public article text and tables, or a direct PDF link. "
+                   "Pages requiring login or JavaScript may not be readable.")
+        import_web = st.form_submit_button("Process webpages", type="primary")
+    if import_web:
+        queued, errors = 0, []
+        for url in dict.fromkeys(line.strip() for line in webpage_urls.splitlines() if line.strip()):
+            try:
+                web_sources.enqueue(db, url, target_language, summary_route)
+                queued += 1
+            except Exception as exc:
+                errors.append(f"{url}: {exc}")
+        manager.pump()
+        if queued and not errors:
+            st.session_state["raccoon_activity_next"] = "Processing"
+            navigate("Raccoon activity", f"Sent {queued} webpage(s) to Processing.")
+        if queued:
+            st.success(f"Sent {queued} webpage(s) to Processing.")
+        if not queued and not errors:
+            st.info("Paste a webpage URL first.")
         for error in errors:
             st.error(error)
 
@@ -576,12 +602,14 @@ if page == "Library":
                  f"{presentation.category_label(video['category'])}")
         uploaded_source = db.execute("SELECT * FROM uploaded_sources WHERE video_id=?",
                                      (video_id,)).fetchone()
-        is_document = uploaded_source is not None and uploaded_source["kind"] == "document"
-        if uploaded_source is None:
-            st.link_button("Open original video", video["url"])
-        elif Path(uploaded_source["path"]).is_file():
+        is_document = uploaded_source is not None and uploaded_source["kind"] in {"document", "webpage"}
+        if uploaded_source is None or uploaded_source["kind"] == "webpage":
+            st.link_button("Open original webpage" if uploaded_source else "Open original video", video["url"])
+        if uploaded_source is not None and Path(uploaded_source["path"]).is_file():
             with open(uploaded_source["path"], "rb") as original:
-                st.download_button("Download original file", original, file_name=video["title"])
+                download_name = ("webpage" + Path(uploaded_source["path"]).suffix
+                                 if uploaded_source["kind"] == "webpage" else video["title"])
+                st.download_button("Download original file", original, file_name=download_name)
         if video["source_photo"] and Path(video["source_photo"]).is_file():
             with st.expander("Source photo"):
                 st.image(video["source_photo"])
