@@ -13,7 +13,7 @@ from PIL import Image
 
 from pva import intelligence, llama_runtime, media, pipeline, presentation, store, tasks, usage_visuals
 from pva.summary_router import SummaryRoute, list_models
-from pva import visual_evidence
+from pva import visual_evidence, uploads
 
 
 ROOT = Path(__file__).resolve().parent
@@ -280,7 +280,7 @@ if page == "Settings":
     settings_page()
 
 if page == "Add videos":
-    st.header("Add videos to summarize", anchor=False)
+    st.header("Add videos, audio or documents", anchor=False)
     st.html("""<div class="raccoon-steps" aria-label="How it works">
       <div><b>1</b><span>Add links or photos</span></div>
       <div><b>2</b><span>Confirm and process</span></div>
@@ -326,6 +326,34 @@ if page == "Add videos":
             st.success(f"Sent {queued} input(s) to Finding in Raccoon activity.")
         elif not errors:
             st.info("Paste a link or upload a photo first.")
+        for error in errors:
+            st.error(error)
+    st.subheader("Audio and documents", anchor=False)
+    with st.form("upload_sources", clear_on_submit=True):
+        files = st.file_uploader("Upload audio or documents", type=uploads.EXTENSIONS,
+                                  accept_multiple_files=True,
+                                  help="Audio: MP3, WAV, M4A, AAC, FLAC, OGG, OPUS, WMA. "
+                                       "Documents: PDF with selectable text, DOCX, TXT, MD.")
+        st.caption("Files go directly to Processing. Audio is transcribed locally; document text "
+                   "is summarized in your selected language. Scanned PDFs need a searchable text layer.")
+        process_files = st.form_submit_button("Process uploaded files", type="primary")
+    if process_files:
+        queued, errors = 0, []
+        for source_file in files or []:
+            try:
+                uploads.save(db, DATA, source_file.name, source_file.getvalue(),
+                             target_language, summary_route)
+                queued += 1
+            except Exception as exc:
+                errors.append(f"{source_file.name}: {exc}")
+        manager.pump()
+        if queued and not errors:
+            st.session_state["raccoon_activity_next"] = "Processing"
+            navigate("Raccoon activity", f"Sent {queued} file(s) to Processing.")
+        if queued:
+            st.success(f"Sent {queued} file(s) to Processing.")
+        if not files:
+            st.info("Upload an audio or document file first.")
         for error in errors:
             st.error(error)
 
@@ -546,17 +574,29 @@ if page == "Library":
         st.subheader(video["title"])
         st.write(f"{video['author']} · {video['published_at'] or 'Date unknown'} · "
                  f"{presentation.category_label(video['category'])}")
-        st.link_button("Open original video", video["url"])
+        uploaded_source = db.execute("SELECT * FROM uploaded_sources WHERE video_id=?",
+                                     (video_id,)).fetchone()
+        is_document = uploaded_source is not None and uploaded_source["kind"] == "document"
+        if uploaded_source is None:
+            st.link_button("Open original video", video["url"])
+        elif Path(uploaded_source["path"]).is_file():
+            with open(uploaded_source["path"], "rb") as original:
+                st.download_button("Download original file", original, file_name=video["title"])
         if video["source_photo"] and Path(video["source_photo"]).is_file():
             with st.expander("Source photo"):
                 st.image(video["source_photo"])
         if video["status"] == "ready":
             st.caption("Select a little TV beside a point to see its evidence.")
             st.html(presentation.summary_html(video, font_size=sizes[size_choice]))
-            with st.expander("Full transcript"):
-                for group in presentation.merge_transcript(video["segments"]):
-                    st.write(f"{presentation.timestamp(group['start'])}–"
-                             f"{presentation.timestamp(group['end'])}  {group['text']}")
+            with st.expander("Full document text" if is_document else "Full transcript"):
+                if is_document:
+                    for index, group in enumerate(video["segments"], 1):
+                        st.caption(f"Section {index}")
+                        st.text(group["text"])
+                else:
+                    for group in presentation.merge_transcript(video["segments"]):
+                        st.write(f"{presentation.timestamp(group['start'])}–"
+                                 f"{presentation.timestamp(group['end'])}  {group['text']}")
             translated_rows = [{**row, "text": row["translated_text"]}
                                for row in video["segments"] if row["translated_text"]]
             if translated_rows:

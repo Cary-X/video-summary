@@ -39,6 +39,8 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
     video = db.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
     if video is None:
         raise KeyError(video_id)
+    upload = db.execute("SELECT * FROM uploaded_sources WHERE video_id=?", (video_id,)).fetchone()
+    is_document = upload is not None and upload["kind"] == "document"
     if video["status"] == "ready" and not refresh:
         return store.detail(db, video_id)
     if video["status"] == "ready" and refresh:
@@ -74,6 +76,27 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         if segment_rows:
             language = video["language"]
             stage("transcribed", "Reusing the saved transcript after the translation failure", 0.44)
+        elif upload is not None:
+            path = Path(upload["path"])
+            if not path.is_file():
+                raise ValueError("The uploaded source file is missing. Upload it again.")
+            if is_document:
+                from .uploads import document_segments
+                stage("extract", "Extracting document text and tables", 0.15)
+                segments, language = document_segments(path), "und"
+                transcript_source = "document"
+            else:
+                stage("asr", "Transcribing uploaded audio locally", 0.30)
+                segments, language = media.transcribe(
+                    path, on_progress=(lambda fraction, detail: on_progress(
+                        "asr", 0.30 + 0.14 * fraction, detail)) if on_progress else None)
+                transcript_source = "uploaded_audio"
+            store.replace_segments(db, video_id, segments)
+            with db:
+                db.execute("UPDATE videos SET language=?,transcript_source=? WHERE id=?",
+                           (language, transcript_source, video_id))
+            segment_rows = [dict(x) for x in db.execute(
+                "SELECT * FROM segments WHERE video_id=? ORDER BY seq", (video_id,))]
         else:
             stage("metadata", "Resolving video metadata", 0.04)
             source = media.metadata(video["url"], cookie_browser=cookie_browser)
@@ -105,7 +128,7 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
             segment_rows = [dict(x) for x in db.execute(
                 "SELECT * FROM segments WHERE video_id=? ORDER BY seq", (video_id,))]
         target = video["target_language"]
-        if not media.same_language(language, target):
+        if not is_document and not media.same_language(language, target):
             stage("translation", f"Translating {language} to {target}", 0.45)
             translated = {row["id"]: row["translated_text"] for row in segment_rows
                           if row["translated_text"]}
@@ -129,8 +152,9 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
                       f"Kept the original transcript for {missing} segment(s) without a valid translation.",
                       0.65)
         else:
-            stage("translation", f"Skipped: transcript is already {target}", 0.65)
-        cues = _visual_cues(segment_rows)
+            stage("translation", "Document is summarized directly in the selected language" if is_document
+                  else f"Skipped: transcript is already {target}", 0.65)
+        cues = [] if upload is not None else _visual_cues(segment_rows)
         frames: list[dict] = []
         if cues:
             stage("visual", f"Inspecting {len(cues)} visual references", 0.66)
@@ -178,7 +202,11 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         feedback = [dict(x) for x in db.execute("SELECT * FROM feedback ORDER BY id")]
         summary, claims = intelligence.summarize(
             segment_rows, frames, target_language=target,
-            skill_text=skill_file.read_text(encoding="utf-8"), feedback=feedback,
+            skill_text=skill_file.read_text(encoding="utf-8") + (
+                "\nThe source is a document, not a video. Start/end values are section offsets, "
+                "not timestamps. Summarize the document in the requested language, preserve "
+                "table relationships, and never invent speakers, timing or unseen visuals."
+                if is_document else ""), feedback=feedback,
             on_warning=lambda detail: stage("summary warning", detail, 0.79),
             on_progress=(lambda done, total: on_progress(
                 "summary", 0.79 + 0.17 * done / total,
@@ -219,7 +247,11 @@ def resummarize(db: sqlite3.Connection, video_id: str, *, skill_file: Path,
 
     summary, claims = intelligence.summarize(
         video["segments"], video["frames"], target_language=video["target_language"],
-        skill_text=skill_file.read_text(encoding="utf-8"), feedback=feedback_rows, on_warning=warning,
+        skill_text=skill_file.read_text(encoding="utf-8") + (
+            "\nThe source is a document. Start/end values are section offsets, not timestamps. "
+            "Preserve table relationships; never invent timing or unseen visuals."
+            if video.get("transcript_source") == "document" else ""),
+        feedback=feedback_rows, on_warning=warning,
         on_progress=(lambda done, total: on_progress(
             "summary", 0.85 + 0.12 * done / total, f"Summary call {done}/{total}"))
             if on_progress else None)

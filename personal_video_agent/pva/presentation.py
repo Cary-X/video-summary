@@ -98,6 +98,9 @@ def summary_html(video: dict, *, font_size: int = 16) -> str:
         starts = [row["start"] for row in matched] + [row["at_seconds"] for row in matched_frames]
         ends = [row["end"] for row in matched] + [row["at_seconds"] for row in matched_frames]
         span = f"{timestamp(min(starts))}–{timestamp(max(ends))}" if starts else ""
+        if video.get("transcript_source") == "document":
+            matched = [row for row in video.get("segments", []) if f"s:{row['id']}" in refs]
+            span = "Document text"
         for group in matched:
             source_parts.append(f'<p>{escape(group["text"])}</p>')
         for frame in matched_frames:

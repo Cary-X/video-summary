@@ -44,6 +44,10 @@ def connect(path: Path) -> sqlite3.Connection:
       seq INTEGER NOT NULL, start REAL NOT NULL, end REAL NOT NULL,
       text TEXT NOT NULL, translated_text TEXT, UNIQUE(video_id, seq)
     );
+    CREATE TABLE IF NOT EXISTS uploaded_sources (
+      video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+      path TEXT NOT NULL, kind TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS frames (
       id INTEGER PRIMARY KEY, video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
       segment_id INTEGER REFERENCES segments(id), at_seconds REAL NOT NULL,

@@ -4,6 +4,8 @@ This is a new, single-person agent in its own folder. The earlier `via` project 
 
 ## Run
 
+You can also upload multiple audio files (MP3, WAV, M4A, AAC, FLAC, OGG, OPUS, WMA) and documents (PDF, DOCX, TXT, MD) in **Add videos → Audio and documents**, then click **Process uploaded files**. Each file goes directly to the existing processing queue with independent progress, error reporting, retry and deletion. Audio uses local ASR; documents extract text and DOCX tables without video downloads or searches. The chosen summary engine writes in your selected language. Listings includes the summary, source evidence, full document text or transcript, and original-file download. Document evidence has no artificial timestamps. Uploaded originals stay in the private data/uploads directory. PDFs must have selectable text: scanned, blank or password-protected PDFs report an error; diagrams embedded as images are not interpreted in this version. TXT/MD support UTF-8 and UTF-16.
+
 From this folder, with **64-bit Python 3.11 or later** and `ffmpeg` on `PATH`:
 
 ```powershell
