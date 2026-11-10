@@ -1,74 +1,40 @@
 # Raccoon Agent
 
-This is a new, single-person agent in its own folder. The earlier `via` project remains available. This agent accepts a video link or many screenshots at once. DeepSeek vision identifies each distinct video card in an image, including multiple cards in one photo. The app searches YouTube separately and asks DeepSeek to check each result against the identified card. You confirm one match per card. No metadata typing is required. Unverified source matches remain in Finding; they cannot be sent to Processing.
+[简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
 
-## Run
+Summarize videos, audio, PDFs, Word documents and public webpages in a private local library. Open the TV marker beside a summary point to see its source.
 
-You can also upload multiple audio files (MP3, WAV, M4A, AAC, FLAC, OGG, OPUS, WMA) and documents (PDF, DOCX, TXT, MD) in **Add videos → Audio and documents**, then click **Process uploaded files**. Each file goes directly to the existing processing queue with independent progress, error reporting, retry and deletion. Audio uses local ASR; documents extract text and DOCX tables without video downloads or searches. The chosen summary engine writes in your selected language. Listings includes the summary, source evidence, full document text or transcript, and original-file download. Document evidence has no artificial timestamps. Uploaded originals stay in the private data/uploads directory. PDFs now extract selectable text and table cells with page labels. Scanned pages, broken font mappings and pages with embedded images are rendered for the configured visual reader (API OCR may incur charges; local routes remain available). Blank pages are skipped. DOCX tables retain column labels, and embedded raster images also use the visual reader. Password-protected PDFs must be unlocked first. OCR and complex layouts can still be imperfect; inspect source evidence for important numbers. TXT/MD support UTF-8 and UTF-16.
+## Setup and launch
 
-From this folder, with **64-bit Python 3.11 or later** and `ffmpeg` on `PATH`:
+Install 64-bit Python 3.11+ and FFmpeg, then run these commands in this directory.
 
 ```powershell
 python -m venv .venv64
-.venv64\Scripts\python -m pip install -r requirements.txt
-Copy-Item .env.example .env
-# Edit .env with your OpenAI-compatible endpoint and model.
-.venv64\Scripts\python -m streamlit run app.py
+.\.venv64\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-On this machine, the default `python` command is 32-bit. The working 64-bit executable is `C:\Users\10269\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`; use it for the `-m venv .venv64` command if that is still your Python setup. Dependencies are already installed in this folder's `.venv64` environment.
+Double-click **Start Raccoon Agent.cmd**. In Settings choose an API provider, enter its key and select a model, or run the local setup script and choose Local llama.cpp.
 
-On Windows x64, run `./setup-local-llama.ps1` once and select **Local llama.cpp** in Settings. Raccoon Agent starts its own worker on demand, loads Qwen3 1.7B from `data/models/qwen3-1.7b.gguf`, and runs summarization, translation, and classification without Ollama. The installer reuses a matching local Ollama model file if available. The worker tries GPU offload first and can retry startup on CPU. Set `PVA_LLAMA_DEVICE=cpu` to force CPU, or set `PVA_LLAMA_SERVER` and `PVA_LLAMA_MODEL` to use your own runtime and GGUF. Startup and device logs are in `data/llama.cpp.log`.
+Local model / 本地模型: `powershell -ExecutionPolicy Bypass -File .\setup-local-llama.ps1`
 
-For **Local Ollama**, install and start Ollama and run `ollama pull qwen3:1.7b`. `PVA_LOCAL_MODEL` selects the Ollama model. With **Custom API**, translation and classification still use Ollama.
+## Hardware and memory
 
-To check another Windows PC for llama.cpp GPU support, run `./data/llama.cpp/llama-server.exe --list-devices` after setup. Then run a short summary and check that the listed GPU's memory usage rises during inference. Check available VRAM with other programs open. Total VRAM alone does not determine compatibility. Faster Whisper ASR uses a separate CUDA stack and requires compatible CUDA 12 cuBLAS and cuDNN 9 libraries for GPU use.
+The base environment, GGUF and runtime disk sizes were measured locally. Other cache figures and RAM/VRAM ranges are planning estimates. Peak use varies with context, source size and concurrency.
 
-In **Settings → Summary engine**, choose the engine and summary method. For **Custom API**, choose a provider from the A–Z list, enter its API key, and select a discovered model or type its exact model ID. Presets include Alibaba Cloud (Qwen), Anthropic (Claude), Baidu (Qianfan), Cerebras, Cohere, DeepSeek, Fireworks AI, Google (Gemini), Groq, Kimi, MiniMax, Mistral AI, OpenAI, OpenRouter, SiliconFlow, Tencent (Hunyuan), Together AI, Volcengine (Doubao), xAI (Grok), Z.AI, and Zhipu AI. Regional variants are separate: choose the region that issued your key. The API address is automatic; **Other provider** accepts a custom OpenAI-compatible base URL. Model-list availability depends on the provider and account; manual model entry remains available when discovery fails. These presets use each provider's documented OpenAI-compatible interface; they have not all been tested with paid accounts. Reference examples: [Gemini compatibility](https://ai.google.dev/gemini-api/docs/openai), [Claude compatibility](https://platform.claude.com/docs/en/api/openai-sdk), and [Alibaba regional endpoints](https://help.aliyun.com/en/model-studio/base-url).
+| Component | Disk | RAM / VRAM | Requirements |
+|---|---|---|---|
+| App, PDF/DOCX and web text | 0.79 GiB | 8 GB RAM; 16 GB with local workers | Windows x64, Python 3.11+ |
+| Video/audio download | Several GB temporary / 临时文件数 GB | Depends on media size / 随文件大小变化 | FFmpeg, internet for URLs / 链接需联网 |
+| Faster Whisper small | ~0.5 GB model / 模型 | 2–4 GB RAM or VRAM / 内存或显存 | CPU INT8 or NVIDIA CUDA 12 cuBLAS + cuDNN 9 |
+| llama.cpp Qwen3 1.7B | 1.27 GiB GGUF + 0.08 GiB runtime | 3–6 GB RAM or VRAM / 内存或显存 | CPU or compatible GPU / 兼容显卡 |
+| RapidOCR | Included in base environment / 包含于基础环境 | 1–2 GB RAM | CPU |
+| PaddleOCR-VL 1.6 | 1.04 GiB environment + model cache / 另加模型缓存 | 16 GB system RAM recommended / 建议整机 16 GB | Separate setup; compatible Paddle runtime for GPU / 独立安装，GPU 需兼容运行时 |
+| Summary, matching and OCR APIs | No local weights / 无本地权重 | No dedicated GPU / 无需独显 | Internet and API key / 联网及密钥 |
 
-The API receives transcript and extracted visual evidence for summaries. The app saves the engine, endpoint, model, and method, and keeps the key in process memory. Enter it again in Settings after restarting the app. Switching providers clears the draft key and model. **Automatic** chooses based on length, **Quick** uses one pass, and **Detailed** builds evidence notes in batches before writing. Each job keeps the route it was queued with. To try another route on a saved video, change Settings and use **Refresh summary using latest feedback** in Library.
+[Faster Whisper benchmarks](https://github.com/SYSTRAN/faster-whisper#benchmark) · [Qwen3 GGUF](https://huggingface.co/Qwen/Qwen3-1.7B-GGUF) · [PaddleOCR-VL](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6)
 
-Configure `PVA_LLM_BASE_URL` and `PVA_LLM_API_KEY` in this folder's private `.env` for finding videos from photos. DeepSeek receives the uploaded photo and candidate metadata for identification and match verification. On first run, the app creates a `data` folder beside `app.py` and stores its library, uploads, and screenshots there. Keep Streamlit bound to localhost for this private, unauthenticated app.
+## Configuration and data
 
-## Processing
+Run `setup-local-vision.ps1` for local PaddleOCR. Copy `.env.example` to `.env` for photo matching and vision configuration. Keep `data/` and `.env` when upgrading. Re-enter the summary API key in Settings after restarting.
 
-1. In **Add videos**, paste multiple links (one per line) or upload multiple photos. **Find videos** clears the form and sends the inputs to **Raccoon activity → Finding**. Each identified card becomes its own finding task. The app searches YouTube for each card and DeepSeek checks candidates. Confirm a match and click **Process video** to follow it in **Processing**. You can delete individual tasks and retry failures.
-2. Try available captions. If none are accessible, download media and transcribe locally with faster-whisper. PyAV is constrained below version 19 because the released Faster Whisper audio decoder uses the removed `metadata_errors` argument. Local ASR checks Windows CUDA runtime libraries before selecting GPU; missing libraries select CPU INT8 with the same small model. If an attempted GPU transcription errors, exits, or stalls, its output is discarded and the whole transcript restarts once on CPU, with no further GPU attempts for that task. The display keeps the last completed audio position while the next chunk is computed; it does not show a waiting countdown. One local transcription runs at a time to avoid resource contention. Processing shows model loading, language detection, and completed audio seconds. ASR runs in a separate process that is terminated if it makes no progress for three minutes, so a blocked native encoder cannot hold the queue indefinitely. **Delete from Processing** removes a task and cancels remaining work at the next checkpoint; an in-flight download or API call finishes first; the isolated ASR worker can be terminated on cancellation. Completed Library summaries are retained.
-3. In **Settings**, pick English, 简体中文, 繁體中文, Español, or 粵語. The agent prefers captions in that language and translates timestamped segments when the caption or ASR language differs.
-4. When speech refers to a chart, figure, image, table, slide, or flow, download a small visual copy if needed, retain selected frames, and read them with local PaddleOCR-VL 1.6 layout analysis and chart/text recognition. Temporary media is deleted after processing. Transient SSL download failures get a bounded retry. For a completed video with a visual warning, **Retry missing screenshots** in Library uses the stored transcript and then refreshes the summary.
-5. Summarize from transcript and visual evidence under `summary-skill/SKILL.md`, leading with the central message and why it matters; then classify from the completed summary.
-6. Save transcript, translations, claims, evidence IDs, screenshots, status, and stage events in SQLite. The Library page expands them for review.
-
-The model must return structured JSON and every displayed point must reference stored evidence. Library renders currency as normal text. Each supported summary point has a small **TV** icon that opens complete source sentences reconstructed from overlapping and neighboring captions, with one overall start–end range in an opaque white floating panel. The panel stays above summary text, including when multiple sources are open. Drag its bottom-right corner to resize within 280–960 px width and 140–640 px height, capped by the available width and 75% of the viewport height. Click the marker again to close it. Full transcript, translated transcript, screenshots, and processing trace remain optional expanders. Library lists each video with its creator, date, and category. Filter by category, sort by video date or date added, and open a video to read its summary. The classifier recognizes tech, medical, finance, politics, religion, music, lifestyle, sports, health, and other types. Settings offers Normal (24 px), Larger, and Largest reading text and shows the local storage location. Adjacent sliding captions are merged into readable timed passages. Refreshing a completed summary uses stored evidence and feedback; it does not re-download or re-transcribe. User ratings and notes are saved and included in future summary prompts.
-
-## Usage dashboard
-
-**Raccoon activity → Usage** records each new AI call's time, task step, requested and returned model, video and category when known, input and output tokens, and cached input tokens. It shows narrow daily bars for cost, tokens, and each model's calls and tokens. Task-step charts and a compact table separate identification, matching, translation, visual reading, summary notes, final summary, and classification. A per-video total remains available. Local OCR and ASR display zero DeepSeek API tokens. All usage axes start at zero and displayed counts and costs are nonnegative. DeepSeek reports token counts in each API response. The displayed Flash dollar range uses the published off-peak and peak rates, so it is an estimate rather than a bill. Earlier API calls cannot be backfilled from existing summaries. [DeepSeek usage fields](https://api-docs.deepseek.com/api/create-chat-completion/) and [current model pricing](https://api-docs.deepseek.com/quick_start/pricing/) are the reference points.
-
-## Current limits
-
-- Photo search uses YouTube search via yt-dlp. If the original is elsewhere, paste its link.
-- Sites may block metadata, captions, or media access. On YouTube sign-in or cookie-read errors, the default **Automatic** option tries local Firefox, Chrome, then Edge cookies; choosing one browser tries it first and then the others. Sign in to YouTube in the browser you want to use. The app does not store browser cookies. This depends on local browser access and cannot guarantee that YouTube will allow the request. If a visual-only download is blocked after captions are captured, the agent continues to a transcript-based summary and records a visual warning. If media is required for ASR and remains blocked, that task fails and the queue continues.
-- Local RapidOCR reads text in photos and frames. A vision-capable model can add visual context when configured; if a frame cannot be read, its screenshot remains visible but the summary cannot cite unseen details.
-- Finding and processing run in background worker pools. Their task status and progress persist in SQLite across app restarts.
-- One local user, no login or network server hardening. Bind to localhost.
-
-See [DEVELOPMENT_LOOP.md](DEVELOPMENT_LOOP.md) for the spec, implementation choices, verification, and next evaluation loop.
-
-## Local picture and chart reading
-
-Run `powershell -File .\setup-local-vision.ps1` from this folder to install PaddleOCR-VL in its separate `.venv-paddleocr`. This does not replace the app/ASR dependencies. The default local reader first detects layout with PP-DocLayoutV3. Ordinary screenshot text uses lightweight RapidOCR; detected charts, tables and formulas use the official full PaddleOCR-VL **v1.6** pipeline on CPU. This avoids using the VLM to transcribe every navigation label on a screenshot. Models download on first use. Your PC still supplies the processing time and electricity; no paid vision API tokens are used for successful local frame reads.
-
-In Library, **Reread saved screenshots** queues existing screenshots for local reading, then refreshes the summary from updated evidence using the stored transcript. If every read fails or nothing changes, the previous evidence and summary are kept. If PaddleOCR-VL fails, the processing trace records the warning and RapidOCR can retain ordinary text with a note that chart structure and visual details remain unverified.
-
-Recognized layout blocks, chart/table text, model, and device are cached by image content in SQLite. Repeated reads reuse that result. **Measure & learn** shows local reads, model/device, runtime, cache hits and failures separately from provider token usage. Local runs have zero API cost and API tokens; they are not reported as DeepSeek calls. Model weights and runtime environments remain ignored by Git. Layout and complex-region recognition run in an isolated process with a 10-minute limit, cancellation support, and one-at-a-time resource use.
-
-Optional `.env` settings: `PVA_FRAME_READER=paddleocr`, `PVA_VISUAL_API_FALLBACK=false`, `PVA_PADDLE_DEVICE=cpu`, and `PVA_PADDLE_PYTHON` for another local interpreter. GPU deployment requires a separate compatible Paddle GPU runtime; installing the CPU runtime does not enable CUDA.
-
-For a reproducible smoke check, run `.venv64\Scripts\python.exe tools/evaluate_local_vision.py`. It creates a known-value chart/table fixture, runs the real local model, checks a cached repeat, and saves measured results under `data/vision-eval/`. Use `--image <saved-screenshot>` to evaluate a real frame.
-
-References: [official PaddleOCR-VL 1.6 model](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6) and [full-pipeline deployment guide](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/PaddleOCR-VL.en.md).
-
-## Webpage import
-
-Use **Add videos → Webpages and PDF links** to import multiple public article URLs or direct PDF links. Each becomes an independent Processing task. HTML extraction removes common navigation and scripts, extracts article text, and retains table rows with column labels, including merged cells. The original URL, downloaded source, page/section labels and full extracted text remain available in Listings. Content is treated as evidence, never as agent instructions. Downloads validate public hosts and redirects and are limited to 20 MB and 90 seconds. Only the supplied page is imported; this is not a recursive site crawler. Login, CAPTCHA, paywall and JavaScript-only content are not bypassed; errors appear on the task. File and webpage summaries use your chosen summary engine.
+Public webpages support article and table extraction. Scans and embedded images use the configured OCR reader. Check source evidence for complex tables.
