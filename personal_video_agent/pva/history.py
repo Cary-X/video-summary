@@ -15,6 +15,41 @@ def page(db, outcome, offset, limit):
     return rows, count
 
 
+def reprocess(db, history_id, language, *, summary_route):
+    from . import media, store, tasks, web_sources
+
+    record = db.execute("SELECT * FROM processing_history WHERE id=?", (history_id,)).fetchone()
+    if record is None:
+        raise ValueError("This history record has been deleted.")
+    kind = record["source_kind"]
+    online = kind in {"video", "webpage"}
+    if online:
+        item = db.execute("SELECT id,status FROM videos WHERE url=?", (record["source"],)).fetchone()
+    else:
+        item = db.execute("SELECT id,status FROM videos WHERE id=?", (record["video_id"],)).fetchone()
+    if item:
+        active = db.execute("""
+            SELECT 1 FROM processing_tasks WHERE video_id=? AND status IN ('queued','running')
+        """, (item["id"],)).fetchone()
+        if active:
+            raise ValueError("This source already has a task in Processing.")
+        if item["status"] == "ready":
+            return tasks.enqueue_processing_video(db, item["id"], mode="resummarize", summary_route=summary_route)
+        if not online:
+            original = db.execute("SELECT path FROM uploaded_sources WHERE video_id=?", (item["id"],)).fetchone()
+            if not original or not original["path"] or not Path(original["path"]).is_file():
+                raise ValueError("Upload the original file again in Add sources.")
+        return tasks.enqueue_processing_video(db, item["id"], summary_route=summary_route)
+    if kind == "webpage":
+        return web_sources.enqueue(db, record["source"], language, summary_route)
+    if kind == "video":
+        summary_route.register()
+        url = media.valid_url(record["source"])
+        video_id = store.add_video(db, url, title=url, target_language=language)
+        return tasks.enqueue_processing_video(db, video_id, summary_route=summary_route)
+    raise ValueError("Upload the original file again in Add sources.")
+
+
 def _owned_files(root, video_id, paths, original):
     allowed = [(root / name).resolve() for name in ("uploads", "webpages", "photos", "frames")]
     paths = [Path(path).resolve() for path in paths if path]
@@ -50,12 +85,6 @@ def remove_item(db, video_id, asset_dir, active_tasks):
         paths.extend(row[0] for row in db.execute("SELECT image_path FROM frames WHERE video_id=?", (video_id,)))
         root = asset_dir.resolve()
         files, frame_dir = _owned_files(root, video_id, paths, original)
-        db.execute("""
-            INSERT OR IGNORE INTO processing_history(task_id,video_id,source,source_kind,outcome,at)
-            SELECT ?,video_id,source,source_kind,?,? FROM processing_sources WHERE video_id=?
-              AND NOT EXISTS (SELECT 1 FROM processing_history WHERE video_id=?)
-        """, (video_id, video["status"] if video["status"] in {"ready", "failed"} else "skipped",
-              video["updated_at"], video_id, video_id))
         db.execute("""DELETE FROM task_events WHERE task_type='processing'
                       AND task_id IN (SELECT id FROM processing_tasks WHERE video_id=?)""", (video_id,))
         db.execute("DELETE FROM processing_tasks WHERE video_id=?", (video_id,))

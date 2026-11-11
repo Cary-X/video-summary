@@ -135,3 +135,28 @@ class ProcessingHistoryTests(unittest.TestCase):
             self.assertEqual(len(blocks), 1)
             self.assertIn("Quarterly revenue", blocks[0])
             self.assertTrue(retained[0][0].is_file())
+
+    def test_reprocess_removed_url_and_delete_history_without_resurrection(self):
+        from pva.summary_router import SummaryRoute
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = store.connect(root / "test.db")
+            url = "https://youtu.be/example"
+            video_id = store.add_video(db, url, title="Video")
+            job = tasks.enqueue_processing_video(db, video_id)
+            tasks._update(db, "processing_tasks", job, status="failed", stage="failed", progress=1)
+            record = history.page(db, "", 0, 10)[0][0]
+            history.remove_item(db, video_id, root, set())
+            next_job = history.reprocess(db, record["id"], "zh-Hans",
+                                         summary_route=SummaryRoute(method="batched"))
+            row = db.execute("SELECT * FROM processing_tasks WHERE id=?", (next_job,)).fetchone()
+            self.assertNotEqual(row["video_id"], video_id)
+            self.assertIn('"method": "batched"', row["summary_route_json"])
+            with self.assertRaisesRegex(ValueError, "already has a task"):
+                history.reprocess(db, record["id"], "en", summary_route=SummaryRoute())
+            with db:
+                db.execute("DELETE FROM processing_history WHERE id=?", (record["id"],))
+            with self.assertRaisesRegex(ValueError, "deleted"):
+                history.reprocess(db, record["id"], "en", summary_route=SummaryRoute())
+            db.close()

@@ -151,7 +151,33 @@ def confirm_remove(manager, video_id, title, *, summary=True):
         st.rerun()
 
 
-def history_panel(db, manager):
+@st.dialog("Delete history record")
+def delete_history_record(db_path, record):
+    st.write(record["title"] or record["source"])
+    st.caption("Deletes this attempt from History. Any saved summary stays in Library.")
+    if st.button("Confirm delete record", type="primary"):
+        with closing(store.connect(db_path)) as db, db:
+            db.execute("DELETE FROM processing_history WHERE id=?", (record["id"],))
+        st.session_state["raccoon_message"] = ("History record deleted.", False)
+        st.rerun()
+
+
+@st.dialog("Reprocess source")
+def reprocess_history_record(db_path, record, choose_method, enqueue, language):
+    st.write(record["title"] or record["source"])
+    if record["item_status"] == "ready":
+        st.caption("Generate a new summary from the saved evidence.")
+    method = choose_method(f"history_{record['id']}")
+    if st.button("Send to Processing", type="primary", disabled=method is None):
+        with closing(store.connect(db_path)) as db:
+            if not enqueue(history.reprocess, db, record["id"], language, method=method):
+                return
+        st.session_state["raccoon_activity_next"] = "Processing"
+        st.session_state["raccoon_message"] = ("Source sent to Processing.", False)
+        st.rerun()
+
+
+def history_panel(db, db_path, manager, choose_method, enqueue, language):
     outcomes = {"": "All outcomes", "ready": "Succeeded", "failed": "Failed", "skipped": "Removed from queue"}
     selected = st.selectbox("Outcome", list(outcomes), format_func=outcomes.__getitem__,
                             key="history_outcome", on_change=lambda: st.session_state.pop("history_page", None))
@@ -183,6 +209,14 @@ def history_panel(db, manager):
                     "Remove local data", key=f"history_remove_{row['id']}"
                 ):
                     confirm_remove(manager, row["video_id"], row["title"] or row["source"], summary=False)
+                if row["item_status"] is None and row["source_kind"] in {"audio", "document"}:
+                    if st.button("Upload again", key=f"history_upload_{row['id']}"):
+                        st.session_state["raccoon_next_page"] = "Add sources"
+                        st.rerun()
+                elif st.button("Reprocess", key=f"history_reprocess_{row['id']}"):
+                    reprocess_history_record(db_path, row, choose_method, enqueue, language)
+                if st.button("Delete record", key=f"history_delete_{row['id']}"):
+                    delete_history_record(db_path, row)
     page_navigation(current, total_pages, "history")
 
 

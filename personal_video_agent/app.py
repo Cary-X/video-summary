@@ -596,7 +596,7 @@ if page == "Raccoon activity":
     elif activity == "Processing":
         processing_panel()
     elif activity == "History":
-        library_ui.history_panel(db, manager)
+        library_ui.history_panel(db, DB, manager, choose_summary_method, queue_summary, target_language)
 
 if page == "Library":
     st.header("Your library", anchor=False)
