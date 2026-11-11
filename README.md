@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="personal_video_agent/assets/raccoon-logo.webp" width="104" alt="Raccoon Agent 浣熊头像">
+  <img src="personal_video_agent/assets/raccoon-logo.webp" width="220" alt="Raccoon Agent 主标志 · 浣熊头像">
 </p>
 <h1 align="center">Raccoon Agent · 浣熊助手</h1>
 <p align="center">把视频、音频、文档和网页整理成可核对的摘要。<br>
