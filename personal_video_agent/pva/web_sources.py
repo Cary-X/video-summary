@@ -35,7 +35,7 @@ def enqueue(db, url, language, route):
     if existing:
         return existing["id"]
     with db:
-        db.execute("INSERT OR REPLACE INTO uploaded_sources(video_id,path,kind) VALUES(?,?,?)",
+        db.execute("INSERT INTO uploaded_sources(video_id,path,kind) VALUES(?,?,?) ON CONFLICT(video_id) DO NOTHING",
                    (video_id, "", "webpage"))
     return tasks.enqueue_processing_video(db, video_id, summary_route=route)
 

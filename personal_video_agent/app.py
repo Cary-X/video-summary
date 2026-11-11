@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import replace
 from html import escape
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from PIL import Image
 
 from pva import intelligence, llama_runtime, media, pipeline, presentation, store, tasks, usage_visuals
 from pva.summary_router import SummaryRoute, list_models
-from pva import visual_evidence, uploads, web_sources
+from pva import library, library_ui, visual_evidence, uploads, web_sources
 
 
 ROOT = Path(__file__).resolve().parent
@@ -48,6 +49,7 @@ languages = {"English": "en", "简体中文": "zh-Hans", "繁體中文": "zh-Han
              "Español": "es", "粵語": "yue"}
 sizes = {"Normal": 24, "Larger": 28, "Largest": 32}
 methods = {"auto": "Automatic", "direct": "Quick · single pass", "batched": "Detailed · batched"}
+method_settings = {**methods, "ask": "Ask before processing"}
 backends = {"llama.cpp": "Local llama.cpp", "api": "Custom API"}
 api_providers = dict(sorted({
     "Alibaba Cloud (Qwen · Beijing)": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -83,9 +85,13 @@ size_choice = prefs.get("reading_size", "Normal")
 if size_choice not in sizes:
     size_choice = "Normal"
 target_language = prefs.get("summary_language", "en")
+summary_method = prefs.get("summary_method", "auto")
+if summary_method not in method_settings:
+    summary_method = "auto"
+ask_summary_method = summary_method == "ask"
 summary_route = SummaryRoute(
     backend=saved_backend if saved_backend in backends else "llama.cpp",
-    method=prefs.get("summary_method", "auto"),
+    method="auto" if ask_summary_method else summary_method,
     base_url=prefs.get("summary_base_url", ""), model=prefs.get("summary_model", ""),
 )
 
@@ -96,9 +102,31 @@ def save_preferences(values: dict[str, str]) -> None:
           ON CONFLICT(key) DO UPDATE SET value=excluded.value""", values.items())
 
 
-def queue_summary(action, *args, **kwargs) -> bool:
+def choose_summary_method(key: str, *, batch: bool = False) -> str | None:
+    if not ask_summary_method:
+        return summary_route.method
+    return st.selectbox(
+        "Summary method for this batch" if batch else "Summary method for this task",
+        list(methods), index=None, format_func=methods.get, key=f"summary_method_{key}",
+        placeholder="Choose a method before processing",
+        help="Automatic adapts to length. Quick uses one pass when possible. Detailed collects "
+             "evidence in batches. Change your default in Settings → Summary engine.",
+    )
+
+
+def selected_summary_route(method: str | None, route: SummaryRoute = summary_route) -> SummaryRoute | None:
+    if method is None:
+        st.warning("Choose a summary method before processing.")
+        return None
+    return replace(route, method=method)
+
+
+def queue_summary(action, *args, method: str | None, route: SummaryRoute = summary_route, **kwargs) -> bool:
+    selected = selected_summary_route(method, route)
+    if selected is None:
+        return False
     try:
-        action(*args, summary_route=summary_route, **kwargs)
+        action(*args, summary_route=selected, **kwargs)
     except ValueError as exc:
         st.error(str(exc))
         return False
@@ -127,18 +155,28 @@ st.html(f"""<style>
 <header class="raccoon-brand">
   <img src="{artwork('raccoon-logo.webp')}" alt="" width="68" height="68">
   <h1>Raccoon Agent</h1>
-  <p>Turn video links and screenshots into summaries you can check.</p>
+  <p>Summarize videos, audio, documents and webpages with source evidence.</p>
 </header>""")
 if next_page := st.session_state.pop("raccoon_next_page", None):
-    st.session_state["raccoon_nav"] = next_page
-page = st.radio("Main navigation", ["Add videos", "Raccoon activity", "Library", "Settings"],
-                horizontal=True, label_visibility="collapsed", key="raccoon_nav")
+    st.session_state["raccoon_page"] = next_page
+page = st.session_state.get("raccoon_page", "Add sources")
+if page == "Add videos":  # Migrate sessions open before the navigation rename.
+    page = st.session_state["raccoon_page"] = "Add sources"
+with st.container(key="raccoon_navigation", horizontal=True, horizontal_alignment="center"):
+    for destination, key in (("Add sources", "add"), ("Raccoon activity", "activity"),
+                             ("Library", "library"), ("Settings", "settings")):
+        if st.button(destination, key=f"nav_{key}", type="primary" if page == destination else "secondary"):
+            if destination == "Library":
+                st.session_state.pop("selected", None)
+            navigate(destination)
 if notice := st.session_state.pop("raccoon_message", None):
     message, saved = notice
     if saved:
         show_saved(message)
     else:
         st.success(message)
+for error in st.session_state.pop("raccoon_batch_errors", []):
+    st.error(error)
 
 
 def settings_page() -> None:
@@ -230,10 +268,11 @@ def settings_page() -> None:
                                   key="summary_api_model_input")
 
     with st.form("summary_settings"):
-        method = st.selectbox("How should the agent summarize?", list(methods),
-                              index=list(methods).index(summary_route.method), format_func=methods.get)
+        method = st.selectbox("How should the agent summarize?", list(method_settings),
+                              index=list(method_settings).index(summary_method), format_func=method_settings.get)
         st.caption("Automatic adapts to transcript length. Quick writes in one pass when the transcript fits. "
-                   "Detailed collects evidence in batches before writing.")
+                   "Detailed collects evidence in batches before writing. Ask before processing lets you "
+                   "choose a method for each task or batch.")
         if backend == "api":
             st.caption("The selected provider receives transcript excerpts and any extracted visual text "
                        "needed to write the summary. Provider charges may apply.")
@@ -243,8 +282,9 @@ def settings_page() -> None:
             try:
                 if backend == "api" and not provider:
                     raise ValueError("Choose an API provider.")
-                chosen = SummaryRoute(backend=backend, method=method, base_url=base_url,
+                chosen = SummaryRoute(backend=backend, method="auto" if method == "ask" else method, base_url=base_url,
                                       model=model, api_key=api_key).register()
+                chosen["method"] = method
                 if backend != "api":
                     chosen = {key: chosen[key] for key in ("backend", "method")}
                 save_preferences({f"summary_{key}": value for key, value in chosen.items()})
@@ -279,8 +319,8 @@ def settings_page() -> None:
 if page == "Settings":
     settings_page()
 
-if page == "Add videos":
-    st.header("Add videos, audio or documents", anchor=False)
+if page == "Add sources":
+    st.header("Add sources", anchor=False)
     st.html("""<div class="raccoon-steps" aria-label="How it works">
       <div><b>1</b><span>Add links or photos</span></div>
       <div><b>2</b><span>Confirm and process</span></div>
@@ -329,7 +369,7 @@ if page == "Add videos":
         for error in errors:
             st.error(error)
     st.subheader("Audio and documents", anchor=False)
-    with st.form("upload_sources", clear_on_submit=True):
+    with st.form("upload_sources", clear_on_submit=not ask_summary_method):
         files = st.file_uploader("Upload audio or documents", type=uploads.EXTENSIONS,
                                   accept_multiple_files=True,
                                   help="Audio: MP3, WAV, M4A, AAC, FLAC, OGG, OPUS, WMA. "
@@ -337,18 +377,20 @@ if page == "Add videos":
         st.caption("Files go directly to Processing. Audio is transcribed locally; document text "
                    "is summarized in your selected language. Scanned pages and document images use "
                    "your configured visual reader; API OCR may incur charges.")
+        file_method = choose_summary_method("uploads", batch=True)
         process_files = st.form_submit_button("Process uploaded files", type="primary")
-    if process_files:
+    if process_files and (file_route := selected_summary_route(file_method)) is not None:
         queued, errors = 0, []
         for source_file in files or []:
             try:
                 uploads.save(db, DATA, source_file.name, source_file.getvalue(),
-                             target_language, summary_route)
+                             target_language, file_route)
                 queued += 1
             except Exception as exc:
                 errors.append(f"{source_file.name}: {exc}")
         manager.pump()
-        if queued and not errors:
+        if queued and (not errors or ask_summary_method):
+            st.session_state["raccoon_batch_errors"] = errors
             st.session_state["raccoon_activity_next"] = "Processing"
             navigate("Raccoon activity", f"Sent {queued} file(s) to Processing.")
         if queued:
@@ -358,22 +400,24 @@ if page == "Add videos":
         for error in errors:
             st.error(error)
     st.subheader("Webpages and PDF links", anchor=False)
-    with st.form("web_sources", clear_on_submit=True):
+    with st.form("web_sources", clear_on_submit=not ask_summary_method):
         webpage_urls = st.text_area("Webpage URLs (one per line)",
                                    placeholder="https://example.com/article")
-        st.caption("Import public article text and tables, or a direct PDF link. "
+        st.caption("Paste multiple public webpages or direct PDF URLs, one per line. Each URL gets its own task. "
                    "Pages requiring login or JavaScript may not be readable.")
+        web_method = choose_summary_method("webpages", batch=True)
         import_web = st.form_submit_button("Process webpages", type="primary")
-    if import_web:
+    if import_web and (web_route := selected_summary_route(web_method)) is not None:
         queued, errors = 0, []
         for url in dict.fromkeys(line.strip() for line in webpage_urls.splitlines() if line.strip()):
             try:
-                web_sources.enqueue(db, url, target_language, summary_route)
+                web_sources.enqueue(db, url, target_language, web_route)
                 queued += 1
             except Exception as exc:
                 errors.append(f"{url}: {exc}")
         manager.pump()
-        if queued and not errors:
+        if queued and (not errors or ask_summary_method):
+            st.session_state["raccoon_batch_errors"] = errors
             st.session_state["raccoon_activity_next"] = "Processing"
             navigate("Raccoon activity", f"Sent {queued} webpage(s) to Processing.")
         if queued:
@@ -393,14 +437,16 @@ def finding_panel() -> None:
             """SELECT * FROM finding_tasks WHERE status NOT IN ('delivered','split','skipped')
                ORDER BY created_at DESC,id DESC""")]
         ready = [row for row in rows if row["status"] == "ready"]
-        if ready and st.button("Process all AI verified videos", key="process_all"):
+        batch_method = choose_summary_method("verified_batch", batch=True) if ready else None
+        if ready and st.button("Process all AI verified videos", key="process_all", disabled=batch_method is None):
             sent = 0
             for row in ready:
                 candidates = json.loads(row["candidates_json"])
                 best = next((i for i, item in enumerate(candidates) if item.get("verified") is True), None)
                 if best is None:
                     continue
-                if not queue_summary(tasks.enqueue_processing, connection, row["id"], best, target_language):
+                if not queue_summary(tasks.enqueue_processing, connection, row["id"], best, target_language,
+                                     method=batch_method):
                     break
                 sent += 1
             if sent:
@@ -409,7 +455,7 @@ def finding_panel() -> None:
         if not rows:
             st.info("No videos to confirm yet. Start by adding a link or photo.")
             if st.button("Add links or photos", key="finding_add"):
-                navigate("Add videos")
+                navigate("Add sources")
             return
         for row in rows:
             card = json.loads(row["card_json"] or "{}")
@@ -454,9 +500,12 @@ def finding_panel() -> None:
                             for item in candidates:
                                 st.write(f"{item['title']}: {item.get('reason','')}")
                         verified_choice = chosen is not None and candidates[chosen].get("verified") is True
-                        if st.button("Process video", key=f"process-{row['id']}", type="primary", disabled=not verified_choice,
+                        video_method = choose_summary_method(f"video_{row['id']}") if verified_choice else None
+                        if st.button("Process video", key=f"process-{row['id']}", type="primary",
+                                     disabled=not verified_choice or video_method is None,
                                      help="A verified original video is required before processing"):
-                            if queue_summary(tasks.enqueue_processing, connection, row["id"], chosen, target_language):
+                            if queue_summary(tasks.enqueue_processing, connection, row["id"], chosen, target_language,
+                                             method=video_method):
                                 st.session_state["raccoon_activity_next"] = "Processing"
                                 navigate("Raccoon activity", "Video sent to Processing.")
     finally:
@@ -494,7 +543,8 @@ def processing_panel() -> None:
                     st.caption(latest["detail"])
                 if row["status"] == "failed":
                     st.error(row["error"] or "Processing failed")
-                    if route.get("method") == "direct":
+                    retry_method = choose_summary_method(f"retry_{row['id']}")
+                    if route.get("method") == "direct" and not ask_summary_method:
                         st.caption("Automatic can split long transcripts into batches.")
                         if st.button("Retry with Automatic", key=f"retry-auto-{row['id']}"):
                             try:
@@ -504,14 +554,20 @@ def processing_panel() -> None:
                                 st.rerun()
                             except ValueError as exc:
                                 st.error(str(exc))
-                    if st.button("Retry processing", key=f"retry-process-{row['id']}"):
-                        tasks.retry_processing(connection, row["id"])
-                        manager.pump()
-                        st.rerun()
+                    if st.button("Retry processing", key=f"retry-process-{row['id']}", disabled=retry_method is None):
+                        if ask_summary_method:
+                            if queue_summary(tasks.retry_processing, connection, row["id"], method=retry_method,
+                                             route=SummaryRoute(**route)):
+                                st.rerun()
+                        else:
+                            tasks.retry_processing(connection, row["id"])
+                            manager.pump()
+                            st.rerun()
                     if route.get("backend", "local") != summary_route.backend and st.button(
-                        f"Retry with {backends[summary_route.backend]}", key=f"retry-route-{row['id']}"
+                        f"Retry with {backends[summary_route.backend]}", key=f"retry-route-{row['id']}",
+                        disabled=retry_method is None,
                     ):
-                        if queue_summary(tasks.retry_processing, connection, row["id"]):
+                        if queue_summary(tasks.retry_processing, connection, row["id"], method=retry_method):
                             st.rerun()
                 elif row["status"] == "ready":
                     st.success("Summary ready in Library")
@@ -531,75 +587,35 @@ if page == "Raccoon activity":
     activity = st.radio("Activity view", ["Finding", "Processing", "Usage"],
                         horizontal=True, label_visibility="collapsed", key="raccoon_activity")
     if activity == "Finding":
-        st.caption(f"New summaries · {backends[summary_route.backend]} · {methods[summary_route.method]}")
+        st.caption(f"New summaries · {backends[summary_route.backend]} · {method_settings[summary_method]}")
         if st.button("Change summary settings"):
             navigate("Settings")
         finding_panel()
     elif activity == "Processing":
         processing_panel()
 
-def library_listing(videos: list[dict]) -> None:
-    with st.container(key="library_list"):
-        filters = st.session_state.get("library_filters", {})
-        counts = {}
-        for item in videos:
-            category = item["category"] or ""
-            counts[category] = counts.get(category, 0) + 1
-        types = ["__all__"] + sorted(counts, key=presentation.category_label)
-        type_col, date_col, order_col = st.columns(3)
-        selected_type = type_col.selectbox(
-            "Video type", types, key="library_type_filter",
-            index=types.index(filters["type"]) if filters.get("type") in types else 0,
-            format_func=lambda category: (
-                f"All types ({len(videos)})" if category == "__all__" else
-                f"{presentation.category_label(category)} ({counts[category]})"))
-        date_field = date_col.selectbox(
-            "Sort date", ["published_at", "created_at"], key="library_date_filter",
-            index=int(filters.get("date") == "created_at"),
-            format_func=lambda field: ("Video date" if field == "published_at"
-                                       else "Date added"))
-        order = order_col.selectbox("Order", ["Latest first", "Oldest first"], key="library_order_filter",
-                                   index=int(filters.get("order") == "Oldest first"))
-        st.session_state["library_filters"] = {"type": selected_type, "date": date_field, "order": order}
-        if selected_type != "__all__":
-            videos = [item for item in videos
-                      if (item["category"] or "") == selected_type]
-        videos = presentation.order_library(
-            videos, date_field=date_field, newest_first=order == "Latest first")
-        for item in videos:
-            with st.container(border=True, key=f"library_row_{item['id']}"):
-                title, action = st.columns([4, 1.35], vertical_alignment="center")
-                with title:
-                    st.subheader(item["title"], anchor=False)
-                    meta = [item["author"] or "Unknown creator",
-                            item["published_at"] or "Date unknown",
-                            presentation.category_label(item["category"])]
-                    if item["status"] != "ready":
-                        meta.append(item["status"].replace("_", " ").title())
-                    st.caption(" · ".join(meta))
-                label = "Read summary" if item["status"] == "ready" else "View video"
-                if action.button(label, key=f"library_open_{item['id']}", width="stretch"):
-                    st.session_state["selected"] = item["id"]
-                    st.rerun()
-
-
 if page == "Library":
     st.header("Your library", anchor=False)
-    videos = [dict(row) for row in db.execute("SELECT * FROM videos WHERE status!='cancelled'")]
-    video_id = st.session_state.get("selected")
-    if not videos:
-        st.info("Completed videos will appear here.")
-    elif video_id not in {item["id"] for item in videos}:
-        st.write("Choose a video to read its summary or check its progress.")
-        library_listing(videos)
+    rows = library.entries(db)
+    entry = next((item for item in rows if item["id"] == st.session_state.get("selected")), None)
+    if entry is None:
+        library_ui.listing(db, DB, rows)
     else:
-        if st.button("← Back to video list"):
+        if st.button("← Back to library"):
             st.session_state.pop("selected", None)
             st.rerun()
+        video_id = entry["id"]
         video = store.detail(db, video_id)
-        st.subheader(video["title"])
-        st.write(f"{video['author']} · {video['published_at'] or 'Date unknown'} · "
-                 f"{presentation.category_label(video['category'])}")
+        names, memberships = library.collection_state(db)
+        folders = [names[key] for key in names if key in memberships.get(video_id, ())]
+        st.subheader(video["title"], anchor=False)
+        st.caption(library_ui.metadata(entry, folders))
+        if entry["status"] == "ready":
+            with st.container(horizontal=True, gap="small"):
+                if st.button("Export / share", key="detail_export"):
+                    library_ui.export_summary(DB, entry)
+                if st.button("Collections", key="detail_collections"):
+                    library_ui.edit_collections(DB, entry)
         uploaded_source = db.execute("SELECT * FROM uploaded_sources WHERE video_id=?",
                                      (video_id,)).fetchone()
         is_document = uploaded_source is not None and uploaded_source["kind"] in {"document", "webpage"}
@@ -632,6 +648,7 @@ if page == "Library":
                     for group in presentation.merge_transcript(translated_rows):
                         st.write(f"{presentation.timestamp(group['start'])}–"
                                  f"{presentation.timestamp(group['end'])}  {group['text']}")
+            library_method = choose_summary_method(f"refresh_{video_id}")
             if video["frames"]:
                 with st.expander("Screenshots and visual text"):
                     for frame in video["frames"]:
@@ -641,18 +658,21 @@ if page == "Library":
                             frame["extracted_text"] or "No readable visual text", html=True))
                 active_visual = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
                   AND status IN ('queued','running') LIMIT 1""", (video_id,)).fetchone()
-                if st.button("Reread saved screenshots", disabled=bool(active_visual),
+                if st.button("Reread saved screenshots", disabled=bool(active_visual) or library_method is None,
                              help="Reads saved screenshots again and uses your chosen engine to refresh the summary."):
-                    if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="reread_visual"):
-                        st.success("Saved screenshots sent to Processing")
+                    if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="reread_visual",
+                                     method=library_method):
+                        st.session_state["raccoon_activity_next"] = "Processing"
+                        navigate("Raccoon activity", "Saved screenshots sent to Processing.")
             with st.form("feedback"):
                 rating = st.slider("How useful was this summary?", 1, 5, 4)
                 note = st.text_input("What should improve next time?")
                 if st.form_submit_button("Save feedback"):
                     pipeline.feedback(db, video_id, rating, note)
                     show_saved("Feedback saved.")
-            if st.button("Refresh summary using latest feedback"):
-                if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="resummarize"):
+            if st.button("Refresh summary using latest feedback", disabled=library_method is None):
+                if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="resummarize",
+                                 method=library_method):
                     st.session_state["raccoon_activity_next"] = "Processing"
                     navigate("Raccoon activity", "Summary refresh sent to Processing.")
             existing_frames = {frame["segment_id"] for frame in video["frames"]}
@@ -664,19 +684,23 @@ if page == "Library":
               WHERE video_id=? AND mode='repair_visual' AND status IN ('queued','running')
               LIMIT 1""", (video_id,)).fetchone()
             if visual_gap and st.button("Retry missing screenshots",
-                                        disabled=bool(active_repair)):
-                if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="repair_visual"):
-                    st.success("Screenshot retry sent to Processing")
+                                        disabled=bool(active_repair) or library_method is None):
+                if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="repair_visual",
+                                 method=library_method):
+                    st.session_state["raccoon_activity_next"] = "Processing"
+                    navigate("Raccoon activity", "Screenshot retry sent to Processing.")
         else:
             st.caption(f"Current stage: {video['stage']}")
             if video["error"]:
                 st.error(video["error"])
             active = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
               AND status IN ('queued','running') LIMIT 1""", (video_id,)).fetchone()
-            if not active and st.button("Queue this video for processing"):
-                if queue_summary(tasks.enqueue_processing_video, db, video_id):
+            if not active:
+                ingest_method = choose_summary_method(f"ingest_{video_id}")
+            if not active and st.button("Queue this item for processing", disabled=ingest_method is None):
+                if queue_summary(tasks.enqueue_processing_video, db, video_id, method=ingest_method):
                     st.session_state["raccoon_activity_next"] = "Processing"
-                    navigate("Raccoon activity", "Video sent to Processing.")
+                    navigate("Raccoon activity", "Item sent to Processing.")
         with st.expander("Processing trace"):
             for step in video["events"]:
                 st.write(f"{step['at']} · {step['stage']} · {step['detail']}")

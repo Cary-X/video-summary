@@ -11,6 +11,23 @@ function Test-RaccoonReady {
     }
 }
 
+function Update-RaccoonShortcut {
+    $icon = Join-Path $PSScriptRoot 'assets\raccoon-launcher.ico'
+    $target = Join-Path $PSScriptRoot 'Start Raccoon Agent.cmd'
+    $shortcutPath = Join-Path $PSScriptRoot 'Start Raccoon Agent.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    if ($shortcut.TargetPath -eq $target -and $shortcut.IconLocation -eq "$icon,0") {
+        return
+    }
+    $shortcut.TargetPath = $target
+    $shortcut.WorkingDirectory = $PSScriptRoot
+    $shortcut.IconLocation = "$icon,0"
+    $shortcut.WindowStyle = 7
+    $shortcut.Description = 'Open Raccoon Agent'
+    $shortcut.Save()
+}
+
 try {
     if (-not (Test-RaccoonReady)) {
         $python = Join-Path $PSScriptRoot '.venv64\Scripts\python.exe'
@@ -30,6 +47,11 @@ try {
             }
             Start-Sleep -Milliseconds 300
         }
+    }
+    try {
+        Update-RaccoonShortcut
+    } catch {
+        Write-Warning "Could not update the folder shortcut. $($_.Exception.Message)"
     }
     if (-not $NoBrowser) {
         Start-Process $address

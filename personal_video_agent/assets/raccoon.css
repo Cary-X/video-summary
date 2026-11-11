@@ -28,13 +28,13 @@
 .stApp [data-testid="stFileUploaderDropzone"] small {
   font-size: var(--caption-size); line-height: 1.45;
 }
-.stApp:has(.st-key-raccoon_nav [role="radiogroup"] > :nth-child(2) input:checked) {
+.stApp:has(.st-key-nav_activity button[kind="primary"]) {
   --section-fill: #d4d8bb; --section-edge: #62684b; --section-paper: #eef0de;
 }
-.stApp:has(.st-key-raccoon_nav [role="radiogroup"] > :nth-child(3) input:checked) {
+.stApp:has(.st-key-nav_library button[kind="primary"]) {
   --section-fill: #dfd0df; --section-edge: #795f7b; --section-paper: #f3e9f1;
 }
-.stApp:has(.st-key-raccoon_nav [role="radiogroup"] > :nth-child(4) input:checked) {
+.stApp:has(.st-key-nav_settings button[kind="primary"]) {
   --section-fill: #e5cf9b; --section-edge: #806438; --section-paper: #f7edd4;
 }
 .stApp h1, .stApp h2, .stApp h3 {
@@ -54,34 +54,33 @@
 }
 .raccoon-brand h1 { margin: .35rem 0 .15rem; padding: 0; font-size: clamp(2rem, 6vw, 3rem); }
 .raccoon-brand p { margin: 0; color: #654833; font-size: var(--control-size); }
-.st-key-raccoon_nav { align-self: center; max-width: 100%; }
-.st-key-raccoon_nav [role="radiogroup"] { justify-content: center; gap: .45rem; flex-wrap: wrap; }
-.st-key-raccoon_nav [role="radiogroup"] label {
+/* The Library button remains clickable while a summary is open. */
+.stApp .st-key-raccoon_navigation [class*="st-key-nav_"] button {
   --tv-shell: #eacaa7;
   --tv-edge: #8b6243;
-  position: relative;
+  position: relative; color: var(--ink);
   background: var(--tv-shell); border: 2px solid var(--tv-edge); border-radius: .65rem;
-  min-height: 45px; padding: .24rem 1.1rem .24rem .55rem; margin: 0;
+  min-height: 45px; padding: .24rem 1.1rem .24rem .55rem;
   box-shadow: inset 0 0 0 2px #ffffff43, 0 2px 0 var(--tv-edge);
 }
-.st-key-raccoon_nav [role="radiogroup"] > :nth-child(2) label {
+.stApp .st-key-raccoon_navigation .st-key-nav_activity button {
   --tv-shell: #d4d8bb; --tv-edge: #62684b; border-radius: 1rem .8rem 1rem .8rem;
 }
-.st-key-raccoon_nav [role="radiogroup"] > :nth-child(3) label {
+.stApp .st-key-raccoon_navigation .st-key-nav_library button {
   --tv-shell: #dfd0df; --tv-edge: #795f7b; border-radius: .42rem;
 }
-.st-key-raccoon_nav [role="radiogroup"] > :nth-child(4) label {
+.stApp .st-key-raccoon_navigation .st-key-nav_settings button {
   --tv-shell: #e5cf9b; --tv-edge: #806438; border-radius: .48rem .48rem .95rem .95rem;
 }
-.st-key-raccoon_nav [role="radiogroup"] label::after {
+.stApp .st-key-raccoon_navigation [class*="st-key-nav_"] button::after {
   content: ""; position: absolute; right: .33rem; top: calc(50% - 4px);
   width: 4px; height: 4px; border-radius: 50%; background: var(--tv-edge);
   box-shadow: 0 6px 0 var(--tv-edge); pointer-events: none;
 }
-.st-key-raccoon_nav [role="radiogroup"] label:is(:hover, :has(input:checked)) {
+.stApp .st-key-raccoon_navigation [class*="st-key-nav_"] button:is(:hover, [kind="primary"]) {
   background: color-mix(in srgb, var(--tv-shell) 85%, var(--tv-edge));
 }
-.st-key-raccoon_nav [role="radiogroup"] label:has(input:checked) {
+.stApp .st-key-raccoon_navigation [class*="st-key-nav_"] button[kind="primary"] {
   outline: 2px solid var(--tv-edge); outline-offset: 2px;
 }
 .st-key-raccoon_activity [role="radiogroup"] label {
@@ -183,7 +182,6 @@
   .raccoon-steps { gap: .3rem; }
   .raccoon-steps div { padding: .4rem; gap: .25rem; }
   .raccoon-steps span { font-size: var(--caption-size); overflow-wrap: anywhere; }
-  .st-key-raccoon_nav [role="radiogroup"] { gap: .3rem; }
 }
 @media (max-width: 420px) {
   .raccoon-steps { grid-template-columns: 1fr; }
@@ -192,3 +190,10 @@
 .pva-visual-table table { width: max-content; max-width: 100%; border-collapse: collapse; }
 .pva-visual-table :is(th, td) { padding: .35rem .6rem; border: 1px solid #b3a2b0; text-align: left; }
 .pva-visual-table th { background: #f3e9f1; }
+
+.stApp .st-key-library_filters_panel [data-testid="stWidgetLabel"] p {
+  font-size: var(--control-size); font-weight: 650;
+}
+.stApp .st-key-library_filters_panel [data-testid="stDateInput"] input {
+  font-size: var(--caption-size);
+}

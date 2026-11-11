@@ -30,8 +30,10 @@ Summarize videos, audio, documents, and webpages with source evidence.</p>
 
 1. 下载项目并进入 `personal_video_agent`。按[中文使用指南](personal_video_agent/README.zh-CN.md)安装 Python、FFmpeg 和依赖，双击 **Start Raccoon Agent.cmd**。
 2. 在 **Settings** 选择摘要语言和模型。可以使用本地 llama.cpp，或选择 API 供应商并填写 Key。
-3. 在 **Add videos** 提交来源。视频链接或截图点击 **Find videos**，在 **Finding** 确认候选后点击 **Process video**。音频、文档和网页可直接送到 **Processing**。
-4. 完成后到 **Library** 阅读摘要、展开原文并查看证据。
+3. 在 **Add sources** 提交来源。视频链接或截图点击 **Find videos**，在 **Finding** 确认候选后点击 **Process video**。音频、文档和网页可直接送到 **Processing**。
+4. 完成后到 **Library** 阅读摘要、查看证据或加入收藏夹。列表与详情都可导出 PDF、Word、HTML、Markdown 和纯文本，也可下载带附件的邮件草稿。
+
+在 **Settings** 选择 **Ask before processing**，即可在每次处理前选择摘要方式。
 
 ## 界面风格 / Interface
 
@@ -47,6 +49,7 @@ Warm paper tones, dark outlines, and rounded television shapes carry the illustr
 
 - Find videos from links or screenshots, use available captions, or transcribe audio locally.
 - Extract text and tables from documents and public webpages. Scan OCR uses the configured visual reader.
-- Choose local llama.cpp or a custom summary API. Track jobs and API use in Raccoon activity, then review summaries and source evidence in Library.
+- Choose local llama.cpp or a custom summary API, and optionally choose the summary method before each submission.
+- Filter the paginated Library, save summaries to personal collections, and export five formats or create an email draft with the file attached.
 
-Install the dependencies from the [English guide](personal_video_agent/README.md), then double-click **Start Raccoon Agent.cmd**. Choose your model and summary language in **Settings**, submit sources under **Add videos**, confirm video matches in **Finding**, and read the finished summaries in **Library**. The English and Chinese guides include module-by-module disk, RAM, and GPU requirements.
+Install the dependencies from the [English guide](personal_video_agent/README.md), then double-click **Start Raccoon Agent.cmd**. Choose your model and summary language in **Settings**, submit sources under **Add sources**, confirm video matches in **Finding**, and read the finished summaries in **Library**. The English and Chinese guides include module-by-module disk, RAM, and GPU requirements.

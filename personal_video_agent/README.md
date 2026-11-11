@@ -13,18 +13,26 @@ python -m venv .venv64
 .\.venv64\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Double-click **Start Raccoon Agent.cmd**. In Settings choose an API provider, enter its key and select a model, or run the local setup script and choose Local llama.cpp.
+Double-click **Start Raccoon Agent.cmd** once to launch the app and create the folder shortcut with the raccoon icon. In Settings choose an API provider, enter its key and select a model, or run the local setup script and choose Local llama.cpp.
 
 Local model / 本地模型: `powershell -ExecutionPolicy Bypass -File .\setup-local-llama.ps1`
 
 ## Using the app
 
-![The Add videos page with color-coded television tabs and the raccoon illustration](assets/readme-interface.webp)
+![The Add sources page with color-coded television tabs and the raccoon illustration](assets/readme-interface.webp)
 
 - **Video links and screenshots** — choose **Find videos**. Confirm a verified result in **Raccoon activity → Finding**, then select **Process video**. Captions are used when available, with local speech recognition as a fallback.
 - **Audio and documents** — select files in **Audio and documents**, then choose **Process uploaded files**. Supports common audio formats, PDF, DOCX, TXT and Markdown. The document reader extracts text and tables and can send scans or embedded images to the configured OCR reader.
 - **Public webpages and PDFs** — paste one URL per line in **Webpages and PDF links**, then choose **Process webpages**.
 - **Review** — follow individual jobs under **Processing**, inspect API usage by step under **Usage**, and open the result in **Library**. Select a TV marker to read the supporting excerpt.
+
+### Library and exports
+
+- Filter by collection, topic, source type, and calendar date range. Clear individual filters or reset all filters. Results show ten items per page. Video entries show the platform or domain.
+- Create personal collections and add each summary to several. Suggestions use the topics and source types of your previous saves.
+- Open **Export / share** from a list card or summary. Choose PDF, Word, HTML, Markdown, or plain text and select the sections to include. You can copy the summary or download an email draft with the export attached. Add recipients and send in your mail app.
+
+In **Settings → Summary engine → How should the agent summarize?**, select **Ask before processing** to choose Automatic, Quick, or Detailed before each submission. Each batch uses one choice.
 
 ## Hardware and memory
 

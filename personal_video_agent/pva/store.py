@@ -48,6 +48,15 @@ def connect(path: Path) -> sqlite3.Connection:
       video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
       path TEXT NOT NULL, kind TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS collections (
+      id INTEGER PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS collection_items (
+      collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+      video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+      PRIMARY KEY(collection_id, video_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_collection_items_video ON collection_items(video_id);
     CREATE TABLE IF NOT EXISTS frames (
       id INTEGER PRIMARY KEY, video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
       segment_id INTEGER REFERENCES segments(id), at_seconds REAL NOT NULL,

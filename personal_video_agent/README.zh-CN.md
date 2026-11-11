@@ -13,7 +13,7 @@ python -m venv .venv64
 .\.venv64\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-双击 **Start Raccoon Agent.cmd**。在 Settings 选择 API 供应商、填写 Key 并选模型，或运行本地模型安装脚本后选择 Local llama.cpp。
+首次双击 **Start Raccoon Agent.cmd** 会启动应用，并在文件夹内创建带浣熊图标的快捷方式。在 Settings 选择 API 供应商、填写 Key 并选模型，或运行本地模型安装脚本后选择 Local llama.cpp。
 
 Local model / 本地模型: `powershell -ExecutionPolicy Bypass -File .\setup-local-llama.ps1`
 
@@ -25,6 +25,14 @@ Local model / 本地模型: `powershell -ExecutionPolicy Bypass -File .\setup-lo
 - **音频和文档**。在 **Audio and documents** 批量选文件，点击 **Process uploaded files**。支持常见音频、PDF、DOCX、TXT 和 Markdown。文档读取会提取文字和表格，扫描页和内嵌图片可交给已配置的 OCR。
 - **公开网页和 PDF**。在 **Webpages and PDF links** 每行输入一个网址，点击 **Process webpages**。
 - **查阅结果**。在 **Processing** 看各任务进度，在 **Usage** 看分步骤 API 用量。完成后打开 **Library**，点击摘要旁的小电视查看来源证据。
+
+### 资料库与导出
+
+- 可按收藏夹、主题、来源和日历日期范围筛选，支持单项清空或全部清空。每页 10 条，视频会标注来源平台或域名。
+- 可自建收藏夹，一条摘要可加入多个。系统根据以往收藏的主题和来源推荐收藏夹。
+- 在列表或详情点击 **Export / share**，选择 PDF、Word、HTML、Markdown 或纯文本，再选择要包含的内容。可复制摘要，或下载带附件的邮件草稿，在邮件客户端填写收件人并发送。
+
+在 **Settings → Summary engine → How should the agent summarize?** 选择 **Ask before processing**，每次提交前可选 Automatic、Quick 或 Detailed。批量提交使用同一个选择。
 
 ## 模块容量与设备要求
 
