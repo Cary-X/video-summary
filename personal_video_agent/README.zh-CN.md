@@ -17,6 +17,15 @@ python -m venv .venv64
 
 Local model / 本地模型: `powershell -ExecutionPolicy Bypass -File .\setup-local-llama.ps1`
 
+## 使用步骤
+
+![导入页实际界面，包含不同颜色的复古电视导航和浣熊插画](assets/readme-interface.webp)
+
+- **视频链接和截图**。点击 **Find videos**，在 **Raccoon activity → Finding** 里确认已验证的候选，再点 **Process video**。有字幕时优先读取字幕，缺少字幕时使用本地语音转录。
+- **音频和文档**。在 **Audio and documents** 批量选文件，点击 **Process uploaded files**。支持常见音频、PDF、DOCX、TXT 和 Markdown。文档读取会提取文字和表格，扫描页和内嵌图片可交给已配置的 OCR。
+- **公开网页和 PDF**。在 **Webpages and PDF links** 每行输入一个网址，点击 **Process webpages**。
+- **查阅结果**。在 **Processing** 看各任务进度，在 **Usage** 看分步骤 API 用量。完成后打开 **Library**，点击摘要旁的小电视查看来源证据。
+
 ## 模块容量与设备要求
 
 基础环境、GGUF 和本地运行程序的磁盘占用为本机实测。其余模型缓存及 RAM、显存为规划参考，实际峰值随上下文、文件大小和并发变化。

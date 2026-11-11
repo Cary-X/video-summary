@@ -17,6 +17,15 @@ Double-click **Start Raccoon Agent.cmd**. In Settings choose an API provider, en
 
 Local model / 本地模型: `powershell -ExecutionPolicy Bypass -File .\setup-local-llama.ps1`
 
+## Using the app
+
+![The Add videos page with color-coded television tabs and the raccoon illustration](assets/readme-interface.webp)
+
+- **Video links and screenshots** — choose **Find videos**. Confirm a verified result in **Raccoon activity → Finding**, then select **Process video**. Captions are used when available, with local speech recognition as a fallback.
+- **Audio and documents** — select files in **Audio and documents**, then choose **Process uploaded files**. Supports common audio formats, PDF, DOCX, TXT and Markdown. The document reader extracts text and tables and can send scans or embedded images to the configured OCR reader.
+- **Public webpages and PDFs** — paste one URL per line in **Webpages and PDF links**, then choose **Process webpages**.
+- **Review** — follow individual jobs under **Processing**, inspect API usage by step under **Usage**, and open the result in **Library**. Select a TV marker to read the supporting excerpt.
+
 ## Hardware and memory
 
 The base environment, GGUF and runtime disk sizes were measured locally. Other cache figures and RAM/VRAM ranges are planning estimates. Peak use varies with context, source size and concurrency.
