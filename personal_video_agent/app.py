@@ -177,6 +177,8 @@ if notice := st.session_state.pop("raccoon_message", None):
         st.success(message)
 for error in st.session_state.pop("raccoon_batch_errors", []):
     st.error(error)
+for path in st.session_state.pop("raccoon_cleanup_warnings", []):
+    st.warning(f"Could not remove the cached file: {path}")
 
 
 def settings_page() -> None:
@@ -584,7 +586,7 @@ if page == "Raccoon activity":
     st.write("Confirm the original in Finding. Follow each video in Processing.")
     if next_activity := st.session_state.pop("raccoon_activity_next", None):
         st.session_state["raccoon_activity"] = next_activity
-    activity = st.radio("Activity view", ["Finding", "Processing", "Usage"],
+    activity = st.radio("Activity view", ["Finding", "Processing", "History", "Usage"],
                         horizontal=True, label_visibility="collapsed", key="raccoon_activity")
     if activity == "Finding":
         st.caption(f"New summaries · {backends[summary_route.backend]} · {method_settings[summary_method]}")
@@ -593,13 +595,15 @@ if page == "Raccoon activity":
         finding_panel()
     elif activity == "Processing":
         processing_panel()
+    elif activity == "History":
+        library_ui.history_panel(db, manager)
 
 if page == "Library":
     st.header("Your library", anchor=False)
     rows = library.entries(db)
     entry = next((item for item in rows if item["id"] == st.session_state.get("selected")), None)
     if entry is None:
-        library_ui.listing(db, DB, rows)
+        library_ui.listing(db, DB, rows, manager)
     else:
         if st.button("← Back to library"):
             st.session_state.pop("selected", None)
@@ -616,6 +620,8 @@ if page == "Library":
                     library_ui.export_summary(DB, entry)
                 if st.button("Collections", key="detail_collections"):
                     library_ui.edit_collections(DB, entry)
+                if st.button("Delete summary", key="detail_delete"):
+                    library_ui.confirm_remove(manager, video_id, video["title"])
         uploaded_source = db.execute("SELECT * FROM uploaded_sources WHERE video_id=?",
                                      (video_id,)).fetchone()
         is_document = uploaded_source is not None and uploaded_source["kind"] in {"document", "webpage"}
@@ -650,15 +656,17 @@ if page == "Library":
                                  f"{presentation.timestamp(group['end'])}  {group['text']}")
             library_method = choose_summary_method(f"refresh_{video_id}")
             if video["frames"]:
-                with st.expander("Screenshots and visual text"):
+                with st.expander("Document images and visual text" if is_document else "Screenshots and visual text"):
                     for frame in video["frames"]:
+                        extracted = frame["extracted_text"] or "No readable visual text"
                         st.image(frame["image_path"],
-                                 caption=presentation.timestamp(frame["at_seconds"]))
+                                 caption=extracted.splitlines()[0] if is_document else
+                                 presentation.timestamp(frame["at_seconds"]))
                         st.html(visual_evidence.render(
-                            frame["extracted_text"] or "No readable visual text", html=True))
+                            extracted, html=True))
                 active_visual = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
                   AND status IN ('queued','running') LIMIT 1""", (video_id,)).fetchone()
-                if st.button("Reread saved screenshots", disabled=bool(active_visual) or library_method is None,
+                if not is_document and st.button("Reread saved screenshots", disabled=bool(active_visual) or library_method is None,
                              help="Reads saved screenshots again and uses your chosen engine to refresh the summary."):
                     if queue_summary(tasks.enqueue_processing_video, db, video_id, mode="reread_visual",
                                      method=library_method):
@@ -678,7 +686,7 @@ if page == "Library":
             existing_frames = {frame["segment_id"] for frame in video["frames"]}
             missing_visuals = [row for row in pipeline._visual_cues(video["segments"])
                                if row["id"] not in existing_frames]
-            visual_gap = bool(missing_visuals) and any(
+            visual_gap = not is_document and bool(missing_visuals) and any(
                 step["stage"] == "visual warning" for step in video["events"])
             active_repair = db.execute("""SELECT 1 FROM processing_tasks
               WHERE video_id=? AND mode='repair_visual' AND status IN ('queued','running')

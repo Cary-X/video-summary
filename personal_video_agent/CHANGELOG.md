@@ -2,6 +2,7 @@
 
 | Date | English | 中文 |
 |---|---|---|
+| 2026-11-11 | Added summary deletion, source-only processing history, retained document and webpage images, and separate document/web summary rules. | 新增删除摘要、轻量处理历史、文档和网页图片证据以及独立摘要规则。 |
 | 2026-11-11 | Added Add sources, batch URL imports, library collections and suggestions, filters and pagination, platform labels, five export formats, email drafts, per-submission summary choices, and a logo shortcut. | 新增多来源入口、网址批量导入、收藏夹与推荐、筛选和分页、视频平台标签、五种导出格式、邮件草稿、处理前选摘要方式及浣熊图标快捷方式。 |
 | 2026-11-11 | Added illustrations, a live interface screenshot and bilingual workflows to the GitHub introduction. | GitHub 介绍新增浣熊插画、实际界面截图和中英文操作步骤。 |
 | 2026-11-10 | Windows launcher and bilingual setup and hardware guide. | Windows 双击启动器及中英文安装、硬件说明。 |

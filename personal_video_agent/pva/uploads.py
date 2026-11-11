@@ -35,11 +35,11 @@ def save(db, root: Path, name: str, content: bytes, language: str, route):
     return tasks.enqueue_processing_video(db, video_id, summary_route=route)
 
 
-def document_segments(path: Path, *, on_progress=None) -> list[dict]:
+def document_segments(path: Path, *, on_progress=None, on_image=None) -> list[dict]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         from .document_reader import pdf_blocks
-        blocks = pdf_blocks(path, on_progress=on_progress)
+        blocks = pdf_blocks(path, on_progress=on_progress, on_image=on_image)
     elif suffix == ".docx":
         from docx import Document
         from docx.oxml.ns import qn
@@ -54,17 +54,23 @@ def document_segments(path: Path, *, on_progress=None) -> list[dict]:
                 from .document_reader import table_text
                 blocks.append(table_text([[cell.text for cell in row.cells]
                                            for row in Table(child, document).rows]))
-        from .document_reader import image_text
+        from .document_reader import read_visual_block
         for index, relation in enumerate(document.part.rels.values()):
             if relation.reltype.endswith("/image") and not relation.is_external:
                 image_path = path.parent / (path.stem + f"-image-{index}.png")
                 from PIL import Image
                 from io import BytesIO
-                with Image.open(BytesIO(relation.target_part.blob)) as image:
-                    image.convert("RGB").save(image_path)
+                try:
+                    with Image.open(BytesIO(relation.target_part.blob)) as image:
+                        if min(image.size) < 80:
+                            continue
+                        image.thumbnail((2400, 2400))
+                        image.convert("RGB").save(image_path)
+                except OSError:
+                    continue
                 if on_progress:
                     on_progress(f"Reading document image {index + 1}")
-                blocks.append(f"Document image {index + 1}\n" + image_text(image_path, on_progress))
+                blocks.append(read_visual_block(image_path, f"Document image {index + 1}", on_progress, on_image))
     else:
         raw = path.read_bytes()
         try:

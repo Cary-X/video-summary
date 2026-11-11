@@ -55,3 +55,7 @@ Local model / 本地模型: `powershell -ExecutionPolicy Bypass -File .\setup-lo
 需要本地 PaddleOCR 时运行 `setup-local-vision.ps1`。从 `.env.example` 创建 `.env` 来配置照片识别及视觉接口。升级时保留 `data/` 和 `.env`。Settings 中输入的摘要 Key 重启后需重新填写。
 
 公开网页支持正文和表格提取。扫描 PDF、内嵌图片使用配置的 OCR，复杂表格请核对证据。
+
+在 Library 点 **Delete summary** 可清理本地来源副本和证据。**Raccoon activity → History** 保留来源链接或上传文件名、时间和结果，包括此前失败和已移除的记录。
+
+文档和网页使用[独立摘要规则](summary-skill/document-web.md)。表格保留行列标签，PDF 页面预览、DOCX 图片和筛选后的公开网页图片可在 **Document images and visual text** 查看。每个网页最多检查 12 张候选图片，优先带说明的图，并跳过可识别的重复图、小图和装饰图。

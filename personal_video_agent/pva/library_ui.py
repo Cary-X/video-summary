@@ -1,11 +1,11 @@
 """Streamlit controls for browsing, organizing and exporting saved summaries."""
 from contextlib import closing
 from datetime import date
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import streamlit as st
 
-from . import library, presentation, store, summary_export
+from . import history, library, presentation, store, summary_export
 
 PAGE_SIZE = 10
 FILTER_WIDGETS = {
@@ -112,28 +112,81 @@ def clear_filters(*fields):
     st.session_state["library_page"] = 1
 
 
-def page_navigation(current, total):
+def page_navigation(current, total, scope="library"):
     if total <= 1:
         return
 
     def go(number):
-        st.session_state["library_page"] = number
+        st.session_state[f"{scope}_page"] = number
 
-    with st.container(horizontal=True, horizontal_alignment="center", gap="small", key="library_pages"):
-        st.button("‹", key="library_prev_page", disabled=current == 1,
+    with st.container(horizontal=True, horizontal_alignment="center", gap="small", key=f"{scope}_pages"):
+        st.button("‹", key=f"{scope}_prev_page", disabled=current == 1,
                   help="Previous page", on_click=go, args=(current - 1,))
         previous = 0
         for number in sorted({1, total, *range(max(1, current - 2), min(total, current + 2) + 1)}):
             if number > previous + 1:
                 st.caption("…")
-            st.button(str(number), key=f"library_page_{number}", disabled=current == number,
+            st.button(str(number), key=f"{scope}_page_{number}", disabled=current == number,
                       help=f"Page {number}", on_click=go, args=(number,))
             previous = number
-        st.button("›", key="library_next_page", disabled=current == total,
+        st.button("›", key=f"{scope}_next_page", disabled=current == total,
                   help="Next page", on_click=go, args=(current + 1,))
 
 
-def listing(db, db_path, rows):
+@st.dialog("Remove local copy")
+def confirm_remove(manager, video_id, title, *, summary=True):
+    st.write(title)
+    st.caption("This removes the local summary, source copies, and evidence for this item. "
+               "Processing history keeps the source link or filename, time and outcome.")
+    if st.button("Delete summary" if summary else "Remove local data", type="primary",
+                 key=f"confirm_remove_{video_id}"):
+        try:
+            failed = manager.remove_library_item(video_id)
+        except (ValueError, OSError) as exc:
+            st.error(str(exc))
+            return
+        st.session_state.pop("selected", None)
+        st.session_state["raccoon_message"] = ("Local copy removed. Source kept in History.", False)
+        st.session_state["raccoon_cleanup_warnings"] = failed
+        st.rerun()
+
+
+def history_panel(db, manager):
+    outcomes = {"": "All outcomes", "ready": "Succeeded", "failed": "Failed", "skipped": "Removed from queue"}
+    selected = st.selectbox("Outcome", list(outcomes), format_func=outcomes.__getitem__,
+                            key="history_outcome", on_change=lambda: st.session_state.pop("history_page", None))
+    current = st.session_state.get("history_page", 1)
+    rows, count = history.page(db, selected, (current - 1) * PAGE_SIZE, PAGE_SIZE)
+    total_pages = max(1, (count + PAGE_SIZE - 1) // PAGE_SIZE)
+    if current > total_pages:
+        current = total_pages
+        rows, _ = history.page(db, selected, (current - 1) * PAGE_SIZE, PAGE_SIZE)
+    st.session_state["history_page"] = current
+    if not rows:
+        st.info("No processing history for this outcome.")
+        return
+    st.caption(f"{count} result(s) · Page {current} of {total_pages}")
+    for row in rows:
+        with st.container(border=True, key=f"history_row_{row['id']}"):
+            st.subheader(row["title"] or row["source"], anchor=False)
+            state = ("Local data removed" if row["item_status"] is None else
+                     "In Library" if row["item_status"] == "ready" else "Local item retained")
+            st.caption(f"{outcomes[row['outcome']]} · {state} · {row['at'].replace('T', ' ')}")
+            with st.container(horizontal=True):
+                if row["source_kind"] in {"video", "webpage"} and urlsplit(row["source"]).scheme in {"https", "http"}:
+                    st.link_button("Open source", row["source"])
+                if row["item_status"] == "ready" and st.button("Read summary", key=f"history_open_{row['id']}"):
+                    st.session_state["selected"] = row["video_id"]
+                    st.session_state["raccoon_next_page"] = "Library"
+                    st.rerun()
+                if row["item_status"] in {"failed", "cancelled", "new"} and st.button(
+                    "Remove local data", key=f"history_remove_{row['id']}"
+                ):
+                    confirm_remove(manager, row["video_id"], row["title"] or row["source"], summary=False)
+    page_navigation(current, total_pages, "history")
+
+
+def listing(db, db_path, rows, manager):
     names, memberships = library.collection_state(db)
     topics = sorted({item["category"] or "" for item in rows}, key=presentation.category_label)
     saved = st.session_state.get("library_filter_values", {})
@@ -212,4 +265,6 @@ def listing(db, db_path, rows):
                         export_summary(db_path, entry)
                     if ready and st.button("Collections", key=f"library_collect_{video_id}"):
                         edit_collections(db_path, entry)
+                    if ready and st.button("Delete summary", key=f"library_delete_{video_id}"):
+                        confirm_remove(manager, video_id, entry["title"])
         page_navigation(current_page, total_pages)

@@ -210,6 +210,16 @@ class TaskManager:
             (self.find_active if finding else self.process_active).discard(task_id)
         self.pump()
 
+    def remove_library_item(self, video_id: str) -> list[str]:
+        from . import history
+
+        with self.lock:
+            db = store.connect(self.db_path)
+            try:
+                return history.remove_item(db, video_id, self.asset_dir, self.process_active)
+            finally:
+                db.close()
+
     def _find(self, task_id: str) -> None:
         db = store.connect(self.db_path)
         try:

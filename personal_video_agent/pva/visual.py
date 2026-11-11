@@ -19,6 +19,20 @@ _lock = threading.Lock()
 _start_worker = subprocess.Popen
 
 
+def _image_cache_key(content: bytes, device: str) -> str:
+    return hashlib.sha256(content + (MODEL + device + "layout-chart-v2").encode()).hexdigest()
+
+
+def discard_image_cache(db, image: Path) -> None:
+    try:
+        content = image.read_bytes()
+    except OSError:
+        return
+    devices = {"cpu", "gpu", os.getenv("PVA_PADDLE_DEVICE", "cpu")}
+    db.executemany("DELETE FROM visual_cache WHERE cache_key=?",
+                   [(_image_cache_key(content, device),) for device in devices])
+
+
 def _stop(process) -> None:
     if process is not None and process.poll() is None:
         if os.name == "nt":
@@ -45,7 +59,7 @@ def read(image: Path, *, db_path: Path | None = None, video_id: str | None = Non
          purpose: str = "frame reading") -> dict:
     started = time.monotonic()
     device = os.getenv("PVA_PADDLE_DEVICE", "cpu")
-    key = hashlib.sha256(image.read_bytes() + (MODEL + device + "layout-chart-v2").encode()).hexdigest()
+    key = _image_cache_key(image.read_bytes(), device)
     db = store.connect(db_path or ROOT / "data" / "personal.db")
     result, error, cached = None, None, False
     process = None

@@ -24,7 +24,7 @@ def image_text(path, on_progress=None):
     return rendered
 
 
-def pdf_blocks(path: Path, *, on_progress=None):
+def pdf_blocks(path: Path, *, on_progress=None, on_image=None):
     import pdfplumber
     import pypdfium2 as pdfium
     from pypdf import PdfReader
@@ -46,7 +46,11 @@ def pdf_blocks(path: Path, *, on_progress=None):
                 blocks.append(label + "\n" + text)
             blocks.extend(label + "\n" + table_text(rows) for rows in tables if rows)
             # Scans, embedded figures and broken font mappings require visual reading.
-            if not text or "\ufffd" in text or "(cid:" in text or page.images:
+            has_large_image = any(
+                abs(image["x1"] - image["x0"]) * abs(image["bottom"] - image["top"])
+                >= page.width * page.height * 0.04 for image in page.images
+            )
+            if not text or "\ufffd" in text or "(cid:" in text or has_large_image:
                 image_path = path.parent / (path.stem + f"-page-{index+1}.png")
                 with pdfium.PdfDocument(path) as rendered_pdf:
                     rendered_page = rendered_pdf[index]
@@ -55,7 +59,18 @@ def pdf_blocks(path: Path, *, on_progress=None):
                     bitmap.to_pil().save(image_path)
                     bitmap.close()
                     rendered_page.close()
-                blocks.append(label + " (visual evidence)\n" + image_text(image_path, on_progress))
+                label += " (visual evidence)"
+                blocks.append(read_visual_block(image_path, label, on_progress, on_image))
     if not blocks:
         raise ValueError("No readable pages found in this PDF; there is no content for OCR.")
     return blocks
+
+
+def read_visual_block(path, label, on_progress=None, on_image=None):
+    try:
+        text = image_text(path, on_progress)
+    except (ValueError, RuntimeError, OSError):
+        text = "Visual retained for inspection; no reliable OCR text was available."
+    if on_image:
+        on_image(path, label, text)
+    return label + "\n" + text

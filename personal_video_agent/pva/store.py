@@ -101,6 +101,47 @@ def connect(path: Path) -> sqlite3.Connection:
       id INTEGER PRIMARY KEY, task_type TEXT NOT NULL, task_id TEXT NOT NULL,
       at TEXT NOT NULL, stage TEXT NOT NULL, detail TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS processing_history (
+      id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, video_id TEXT NOT NULL,
+      source TEXT NOT NULL, source_kind TEXT NOT NULL, outcome TEXT NOT NULL,
+      at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_history_recent ON processing_history(at DESC,id DESC);
+    CREATE VIEW IF NOT EXISTS processing_sources AS
+      SELECT v.id AS video_id,
+             CASE WHEN u.kind IN ('audio','document') THEN v.title ELSE v.url END AS source,
+             COALESCE(u.kind,'video') AS source_kind
+      FROM videos v LEFT JOIN uploaded_sources u ON u.video_id=v.id;
+    CREATE TRIGGER IF NOT EXISTS record_processing_outcome
+    AFTER UPDATE OF status ON processing_tasks
+    WHEN NEW.status IN ('ready','failed','skipped') AND OLD.status<>NEW.status
+    BEGIN
+      INSERT OR IGNORE INTO processing_history(task_id,video_id,source,source_kind,outcome,at)
+        SELECT NEW.id,video_id,source,source_kind,NEW.status,NEW.updated_at
+        FROM processing_sources WHERE video_id=NEW.video_id;
+    END;
+    INSERT OR IGNORE INTO processing_history(task_id,video_id,source,source_kind,outcome,at)
+      SELECT p.id,s.video_id,s.source,s.source_kind,
+             CASE e.stage WHEN 'complete' THEN 'ready' WHEN 'cancelled' THEN 'skipped' ELSE 'failed' END,
+             e.at
+      FROM task_events e JOIN processing_tasks p ON p.id=e.task_id
+      JOIN processing_sources s ON s.video_id=p.video_id
+      WHERE e.task_type='processing' AND e.stage IN ('complete','failed','cancelled')
+        AND NOT EXISTS (SELECT 1 FROM preferences WHERE key='processing_history_migrated');
+    INSERT OR IGNORE INTO processing_history(task_id,video_id,source,source_kind,outcome,at)
+      SELECT p.id,s.video_id,s.source,s.source_kind,p.status,p.updated_at
+      FROM processing_tasks p JOIN processing_sources s ON s.video_id=p.video_id
+      WHERE p.status IN ('ready','failed','skipped')
+        AND NOT EXISTS (SELECT 1 FROM preferences WHERE key='processing_history_migrated')
+        AND NOT EXISTS (SELECT 1 FROM processing_history h WHERE h.task_id=p.id AND h.outcome=p.status);
+    INSERT OR IGNORE INTO processing_history(task_id,video_id,source,source_kind,outcome,at)
+      SELECT v.id,v.id,s.source,s.source_kind,
+             CASE v.status WHEN 'cancelled' THEN 'skipped' ELSE v.status END,v.updated_at
+      FROM videos v JOIN processing_sources s ON s.video_id=v.id
+      WHERE v.status IN ('ready','failed','cancelled')
+        AND NOT EXISTS (SELECT 1 FROM preferences WHERE key='processing_history_migrated')
+        AND NOT EXISTS (SELECT 1 FROM processing_history h WHERE h.video_id=v.id);
+    INSERT OR IGNORE INTO preferences(key,value) VALUES ('processing_history_migrated','1');
     CREATE TABLE IF NOT EXISTS ai_usage (
       id INTEGER PRIMARY KEY, at TEXT NOT NULL, video_id TEXT REFERENCES videos(id),
       finding_task_id TEXT, purpose TEXT NOT NULL,

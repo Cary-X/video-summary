@@ -53,7 +53,8 @@ def build_sections(video, options, collections=()):
             sections.append(("Translated transcript", [_timed(row) for row in presentation.merge_transcript(translated)]))
     if "Visual text" in options and video.get("frames"):
         sections.append(("Visual text", [
-            presentation.timestamp(frame["at_seconds"]) + "  " + visual_evidence.render(frame["extracted_text"])
+            ("" if document else presentation.timestamp(frame["at_seconds"]) + "  ")
+            + visual_evidence.render(frame["extracted_text"])
             for frame in video["frames"] if frame["extracted_text"]
         ]))
     return sections

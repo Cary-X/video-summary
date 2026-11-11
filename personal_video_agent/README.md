@@ -55,3 +55,7 @@ The base environment, GGUF and runtime disk sizes were measured locally. Other c
 Run `setup-local-vision.ps1` for local PaddleOCR. Copy `.env.example` to `.env` for photo matching and vision configuration. Keep `data/` and `.env` when upgrading. Re-enter the summary API key in Settings after restarting.
 
 Public webpages support article and table extraction. Scans and embedded images use the configured OCR reader. Check source evidence for complex tables.
+
+Use **Delete summary** in Library to remove the local source copy and evidence. **Raccoon activity → History** keeps the URL or upload filename, time and outcome, including previous failed attempts and removed items.
+
+Documents and webpages use [separate summary rules](summary-skill/document-web.md). Extracted tables retain row and column labels. PDF page previews, DOCX images and selected public webpage images are available under **Document images and visual text**. Web imports inspect up to 12 image candidates per page, prioritizing captions and skipping duplicates and small or decorative images where detectable.
