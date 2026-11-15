@@ -1,0 +1,365 @@
+"""Persistent finding and processing queues for the local Streamlit app."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from . import intelligence, media, pipeline, store, summary_router
+
+
+def _task_event(db: sqlite3.Connection, kind: str, task_id: str,
+                stage: str, detail: str) -> None:
+    db.execute("INSERT INTO task_events(task_type,task_id,at,stage,detail) VALUES (?,?,?,?,?)",
+               (kind, task_id, store.now(), stage, detail[:1500]))
+
+
+def _update(db: sqlite3.Connection, table: str, task_id: str, *, status: str,
+            stage: str, progress: float, detail: str = "", error: str | None = None) -> None:
+    kind = "finding" if table == "finding_tasks" else "processing"
+    with db:
+        active_only = " AND status!='skipped'"
+        updated = db.execute(f"""UPDATE {table}
+          SET status=?,stage=?,progress=?,error=?,updated_at=?
+          WHERE id=?{active_only}""",
+          (status, stage, max(0, min(1, progress)), error,
+           store.now(), task_id)).rowcount
+        if updated:
+            _task_event(db, kind, task_id, stage, detail or stage)
+
+
+def skip_finding(db: sqlite3.Connection, task_id: str) -> None:
+    """Remove a finding task from the queue, including a photo's unprocessed cards."""
+    row = db.execute("SELECT status FROM finding_tasks WHERE id=?", (task_id,)).fetchone()
+    if row is None:
+        raise KeyError(task_id)
+    if row["status"] in {"delivered", "split"}:
+        raise ValueError("This item has already moved out of Finding")
+    with db:
+        ids = [task_id] + [item["id"] for item in db.execute(
+            "SELECT id FROM finding_tasks WHERE parent_id=?", (task_id,))]
+        for current in ids:
+            changed = db.execute("""UPDATE finding_tasks
+              SET status='skipped',stage='skipped',progress=1,error=NULL,updated_at=?
+              WHERE id=? AND status NOT IN ('delivered','split','skipped')""",
+              (store.now(), current)).rowcount
+            if changed:
+                _task_event(db, "finding", current, "skipped",
+                            "Removed from Finding; video will not be processed")
+
+
+def _is_skipped(db: sqlite3.Connection, task_id: str) -> bool:
+    row = db.execute("SELECT status FROM finding_tasks WHERE id=?", (task_id,)).fetchone()
+    return row is None or row["status"] == "skipped"
+
+
+def skip_processing(db: sqlite3.Connection, task_id: str) -> None:
+    """Hide the task and stop its worker at the next processing checkpoint."""
+    with db:
+        row = db.execute("SELECT * FROM processing_tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        db.execute("""UPDATE processing_tasks SET status='skipped',stage='cancelled',
+          error=NULL,updated_at=? WHERE id=?""", (store.now(), task_id))
+        _task_event(db, "processing", task_id, "cancelled", "Removed from Processing")
+        other = db.execute("""SELECT 1 FROM processing_tasks WHERE video_id=?
+          AND id!=? AND status IN ('queued','running')""", (row["video_id"], task_id)).fetchone()
+        if not other:
+            db.execute("""UPDATE videos SET status='cancelled',stage='cancelled',error=NULL
+              WHERE id=? AND status!='ready'""", (row["video_id"],))
+
+
+def retry_processing(db: sqlite3.Connection, task_id: str, *,
+                     summary_route: summary_router.SummaryRoute | None = None) -> None:
+    route = json.dumps(summary_route.register()) if summary_route is not None else None
+    with db:
+        changed = db.execute("""UPDATE processing_tasks
+            SET status='queued',stage='queued',progress=0,error=NULL,updated_at=?,
+                summary_route_json=COALESCE(?,summary_route_json)
+            WHERE id=? AND status='failed'""", (store.now(), route, task_id)).rowcount
+        if not changed:
+            raise ValueError("Only failed processing tasks can be retried.")
+        _task_event(db, "processing", task_id, "queued", "Retry requested")
+
+
+def _check_processing(db: sqlite3.Connection, task_id: str) -> None:
+    row = db.execute("SELECT status FROM processing_tasks WHERE id=?", (task_id,)).fetchone()
+    if row is None or row["status"] == "skipped":
+        raise pipeline.ProcessingCancelled("Removed from Processing")
+
+
+def enqueue_find(db: sqlite3.Connection, kind: str, source: str,
+                 *, photo_path: str | None = None, card: dict | None = None,
+                 parent_id: str | None = None) -> str:
+    if kind not in {"photo", "card", "link"}:
+        raise ValueError("Unsupported finding task")
+    task_id = uuid.uuid4().hex
+    with db:
+        db.execute("""INSERT INTO finding_tasks
+          (id,kind,source,photo_path,parent_id,card_json,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?)""",
+          (task_id, kind, source, photo_path, parent_id,
+           json.dumps(card, ensure_ascii=False) if card else None, store.now(), store.now()))
+        _task_event(db, "finding", task_id, "queued", "Waiting to find the video")
+    return task_id
+
+
+def enqueue_processing(db: sqlite3.Connection, finding_task_id: str,
+                       candidate_index: int, target_language: str, *,
+                       summary_route: summary_router.SummaryRoute | None = None) -> str:
+    row = db.execute("SELECT * FROM finding_tasks WHERE id=?", (finding_task_id,)).fetchone()
+    if row is None or row["status"] != "ready":
+        raise ValueError("The finding task is not ready to process")
+    candidates = json.loads(row["candidates_json"])
+    if not 0 <= candidate_index < len(candidates):
+        raise ValueError("Choose a search result")
+    chosen = candidates[candidate_index]
+    if chosen.get("verified") is not True:
+        raise ValueError("The original video has not been verified. Keep it in Finding until a reliable match is found.")
+    route_json = json.dumps((summary_route or summary_router.SummaryRoute()).register())
+    card = json.loads(row["card_json"] or "{}")
+    video_id = store.add_video(
+        db, chosen["url"], title=chosen.get("title") or card.get("title") or "Untitled",
+        author=chosen.get("author") or card.get("author") or "",
+        published_at=chosen.get("published_at") or "",
+        photo=row["photo_path"], target_language=target_language)
+    task_id = uuid.uuid4().hex
+    with db:
+        db.execute("""INSERT INTO processing_tasks
+          (id,video_id,finding_task_id,summary_route_json,created_at,updated_at)
+          VALUES (?,?,?,?,?,?)""", (task_id, video_id, finding_task_id, route_json,
+                                   store.now(), store.now()))
+        db.execute("""UPDATE finding_tasks SET status='delivered',stage='delivered',
+          progress=1,video_id=?,updated_at=? WHERE id=?""",
+          (video_id, store.now(), finding_task_id))
+        _task_event(db, "finding", finding_task_id, "delivered", "Moved to Processing")
+        _task_event(db, "processing", task_id, "queued", "Waiting to process the video")
+    return task_id
+
+
+def enqueue_processing_video(db: sqlite3.Connection, video_id: str,
+                             *, mode: str = "ingest",
+                             summary_route: summary_router.SummaryRoute | None = None) -> str:
+    if db.execute("SELECT 1 FROM videos WHERE id=?", (video_id,)).fetchone() is None:
+        raise KeyError(video_id)
+    if mode not in {"ingest", "repair_visual", "reread_visual", "resummarize"}:
+        raise ValueError("Unsupported processing mode")
+    route_json = json.dumps((summary_route or summary_router.SummaryRoute()).register())
+    task_id = uuid.uuid4().hex
+    with db:
+        db.execute("""INSERT INTO processing_tasks
+          (id,video_id,mode,summary_route_json,created_at,updated_at) VALUES (?,?,?,?,?,?)""",
+          (task_id, video_id, mode, route_json, store.now(), store.now()))
+        _task_event(db, "processing", task_id, "queued", "Waiting to process the video")
+    return task_id
+
+
+def cookie_browser(db: sqlite3.Connection) -> str:
+    row = db.execute("SELECT value FROM preferences WHERE key='youtube_cookie_browser'").fetchone()
+    return row["value"] if row else "auto"
+
+
+class TaskManager:
+    def __init__(self, db_path: Path, asset_dir: Path, skill_file: Path):
+        self.db_path = db_path
+        self.asset_dir = asset_dir
+        self.skill_file = skill_file
+        self.find_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pva-find")
+        self.process_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pva-process")
+        self.lock = threading.Lock()
+        self.find_active: set[str] = set()
+        self.process_active: set[str] = set()
+        db = store.connect(db_path)
+        with db:
+            db.execute("UPDATE finding_tasks SET status='queued',stage='resuming' WHERE status='running'")
+            db.execute("UPDATE processing_tasks SET status='queued',stage='resuming' WHERE status='running'")
+        db.close()
+
+    def pump(self) -> None:
+        """Claim only available slots; a failed task cannot stop the next one."""
+        with self.lock:
+            db = store.connect(self.db_path)
+            try:
+                for table, active, pool, run in (
+                    ("finding_tasks", self.find_active, self.find_pool, self._find),
+                    ("processing_tasks", self.process_active, self.process_pool, self._process),
+                ):
+                    capacity = 2 - len(active)
+                    if capacity <= 0:
+                        continue
+                    rows = db.execute(
+                        f"SELECT id FROM {table} WHERE status='queued' ORDER BY created_at,id LIMIT ?",
+                        (capacity,)).fetchall()
+                    for row in rows:
+                        task_id = row["id"]
+                        with db:
+                            claimed = db.execute(
+                                f"UPDATE {table} SET status='running',stage='starting',updated_at=? "
+                                "WHERE id=? AND status='queued'", (store.now(), task_id)).rowcount
+                        if claimed:
+                            active.add(task_id)
+                            pool.submit(run, task_id)
+            finally:
+                db.close()
+
+    def _done(self, task_id: str, *, finding: bool) -> None:
+        with self.lock:
+            (self.find_active if finding else self.process_active).discard(task_id)
+        self.pump()
+
+    def remove_library_item(self, video_id: str) -> list[str]:
+        from . import history
+
+        with self.lock:
+            db = store.connect(self.db_path)
+            try:
+                return history.remove_item(db, video_id, self.asset_dir, self.process_active)
+            finally:
+                db.close()
+
+    def _find(self, task_id: str) -> None:
+        db = store.connect(self.db_path)
+        try:
+            row = db.execute("SELECT * FROM finding_tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None or row["status"] == "skipped":
+                return
+            kind = row["kind"]
+            desktop = json.loads(row["card_json"] or "{}").get("_desktop_summary")
+            if kind == "photo":
+                _update(db, "finding_tasks", task_id, status="running", stage="identifying",
+                        progress=0.15, detail="DeepSeek is finding distinct video cards")
+                with intelligence.usage_context(self.db_path, finding_task_id=task_id):
+                    identified = intelligence.identify_video_photo(Path(row["photo_path"]))
+                for card in identified["videos"]:
+                    if _is_skipped(db, task_id):
+                        return
+                    if desktop:
+                        card = {**card, "_desktop_summary": desktop}
+                    enqueue_find(db, "card", row["photo_path"],
+                                 photo_path=row["photo_path"], card=card, parent_id=task_id)
+                if _is_skipped(db, task_id):
+                    return
+                _update(db, "finding_tasks", task_id, status="split", stage="identified",
+                        progress=1, detail=f"Created {len(identified['videos'])} separate video tasks")
+            elif kind == "link":
+                _update(db, "finding_tasks", task_id, status="running", stage="metadata",
+                        progress=0.3, detail="Resolving link metadata")
+                source = media.metadata(row["source"], cookie_browser=cookie_browser(db))
+                if _is_skipped(db, task_id):
+                    return
+                candidate = {key: source[key] for key in
+                             ("url", "title", "author", "published_at", "duration")}
+                candidate.update({"score": 1.0, "verified": True,
+                                  "confidence": 1.0, "reason": "Direct link supplied by user"})
+                with db:
+                    db.execute("UPDATE finding_tasks SET candidates_json=? WHERE id=?",
+                               (json.dumps([candidate], ensure_ascii=False), task_id))
+                _update(db, "finding_tasks", task_id, status="ready", stage="found",
+                        progress=1, detail="Link resolved; ready to process")
+            else:
+                card = json.loads(row["card_json"] or "{}")
+                _update(db, "finding_tasks", task_id, status="running", stage="searching",
+                        progress=0.20, detail=f"Searching YouTube for {card.get('title', 'video')}")
+                candidates = media.search_candidates(
+                    card.get("title", ""), card.get("author", ""),
+                    card.get("published_at", ""), limit=8,
+                    cookie_browser=cookie_browser(db))
+                if _is_skipped(db, task_id):
+                    return
+                if not candidates:
+                    raise ValueError("No video search results found")
+                _update(db, "finding_tasks", task_id, status="running", stage="checking",
+                        progress=0.65, detail="DeepSeek is checking the search matches")
+                with intelligence.usage_context(self.db_path, finding_task_id=task_id):
+                    checked = intelligence.verify_video_matches(card, candidates)
+                if _is_skipped(db, task_id):
+                    return
+                with db:
+                    db.execute("UPDATE finding_tasks SET candidates_json=? WHERE id=?",
+                               (json.dumps(checked, ensure_ascii=False), task_id))
+                _update(db, "finding_tasks", task_id, status="ready", stage="found",
+                        progress=1, detail="Search results checked; choose a match")
+                verified = [index for index, candidate in enumerate(checked) if candidate.get("verified") is True]
+                if desktop and desktop.get("automatic") and len(verified) == 1:
+                    prefs = dict(db.execute("SELECT key,value FROM preferences"))
+                    route = summary_router.SummaryRoute(
+                        backend=prefs.get("summary_backend", "llama.cpp"), method=desktop["method"],
+                        base_url=prefs.get("summary_base_url", ""), model=prefs.get("summary_model", ""))
+                    try:
+                        enqueue_processing(db, task_id, verified[0], prefs.get("summary_language", "en"),
+                                           summary_route=route)
+                    except ValueError as exc:
+                        with db:
+                            _task_event(db, "finding", task_id, "found", str(exc))
+        except Exception as exc:
+            _update(db, "finding_tasks", task_id, status="failed", stage="failed",
+                    progress=1, detail=str(exc), error=str(exc))
+        finally:
+            db.close()
+            self._done(task_id, finding=True)
+
+    def _process(self, task_id: str) -> None:
+        db = store.connect(self.db_path)
+        try:
+            _check_processing(db, task_id)
+            row = db.execute("SELECT * FROM processing_tasks WHERE id=?", (task_id,)).fetchone()
+
+            def report(stage: str, fraction: float, detail: str) -> None:
+                _check_processing(db, task_id)
+                _update(db, "processing_tasks", task_id, status="running", stage=stage,
+                        progress=fraction, detail=detail)
+
+            route = summary_router.SummaryRoute(**json.loads(row["summary_route_json"]))
+            with summary_router.use(route), intelligence.usage_context(self.db_path, video_id=row["video_id"]):
+                if row["mode"] == "resummarize":
+                    report("summary", 0.1, "Writing a new summary from the saved transcript")
+                    pipeline.resummarize(db, row["video_id"], skill_file=self.skill_file, on_progress=report)
+                elif row["mode"] == "reread_visual":
+                    pipeline.reread_visuals(db, row["video_id"], skill_file=self.skill_file,
+                                           on_progress=report)
+                elif row["mode"] == "repair_visual":
+                    pipeline.repair_visuals(db, row["video_id"], asset_dir=self.asset_dir,
+                                            skill_file=self.skill_file,
+                                            cookie_browser=cookie_browser(db),
+                                            on_progress=report)
+                else:
+                    pipeline.process(db, row["video_id"], asset_dir=self.asset_dir,
+                                     skill_file=self.skill_file, cookie_browser=cookie_browser(db),
+                                     on_progress=report)
+            _update(db, "processing_tasks", task_id, status="ready", stage="complete",
+                    progress=1, detail="Video summary is ready in Library")
+        except pipeline.ProcessingCancelled:
+            pass
+        except Exception as exc:
+            _update(db, "processing_tasks", task_id, status="failed", stage="failed",
+                    progress=1, detail=str(exc), error=str(exc))
+        finally:
+            # An in-flight operation can return or fail after the user deletes it.
+            # Keep that late result from putting an unfinished video back in Library.
+            row = db.execute("SELECT video_id,status FROM processing_tasks WHERE id=?",
+                             (task_id,)).fetchone()
+            if row is not None and row["status"] == "skipped":
+                with db:
+                    db.execute("""UPDATE videos SET status='cancelled',stage='cancelled',error=NULL
+                      WHERE id=? AND status!='ready' AND NOT EXISTS (
+                        SELECT 1 FROM processing_tasks WHERE video_id=?
+                        AND id!=? AND status IN ('queued','running'))""",
+                      (row["video_id"], row["video_id"], task_id))
+            db.close()
+            self._done(task_id, finding=False)
+
+
+_manager: TaskManager | None = None
+_manager_lock = threading.Lock()
+
+
+def get_manager(db_path: Path, asset_dir: Path, skill_file: Path) -> TaskManager:
+    global _manager
+    with _manager_lock:
+        if _manager is None or _manager.db_path != db_path:
+            _manager = TaskManager(db_path, asset_dir, skill_file)
+    _manager.pump()
+    return _manager

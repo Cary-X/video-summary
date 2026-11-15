@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+data/*
+!data/.gitkeep
+*.db
+*.db-*
+*.sqlite*
+*.log
+*.lnk
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.venv/
+.venv64/
+.venv-paddleocr/
+/runtime/
