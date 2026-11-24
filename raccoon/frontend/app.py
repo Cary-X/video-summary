@@ -13,7 +13,7 @@ import streamlit as st
 from PIL import Image
 
 from pva import intelligence, llama_runtime, media, pipeline, presentation, store, tasks, usage_visuals
-from pva.summary_router import SummaryRoute, list_models
+from pva.summary_router import SummaryRoute, list_models, saved_key
 from pva import desktop_inbox, library, visual_evidence, uploads, web_sources
 from frontend import library_ui
 
@@ -263,8 +263,13 @@ def settings_page() -> None:
             base_url = saved_url if provider == saved_provider else api_providers[provider]
         same_endpoint = bool(saved_url) and base_url.strip().rstrip("/") == saved_url
         if provider:
-            api_key = st.text_input("API key", type="password", key="summary_api_key_input",
-                                    help="Saved locally when you save summary settings. Leave blank to keep your saved key.")
+            key_is_saved = bool(saved_key(base_url.strip().rstrip("/"), summary_route.model))
+            api_key = st.text_input(
+                "API key", type="password", key="summary_api_key_input",
+                placeholder="******** · Saved" if key_is_saved else "Enter API key",
+                help="Saved locally. Enter a new key to replace it; leave blank to keep the saved key.")
+            if key_is_saved:
+                st.caption("API key saved on this computer.")
         if base_url.strip() and (provider == "Other provider" or api_key.strip() or
                                  (same_endpoint and api_configured)):
             lookup = (base_url.strip().rstrip("/"), hashlib.sha256(api_key.strip().encode()).digest(),
@@ -300,7 +305,7 @@ def settings_page() -> None:
         method = st.selectbox("How should the agent summarize?", list(method_settings),
                               index=list(method_settings).index(summary_method), format_func=method_settings.get)
         st.caption("Automatic adapts to transcript length. Quick writes in one pass when the transcript fits. "
-                   "Detailed collects evidence in batches before writing. Ask before processing lets you "
+                   "Detailed extracts video screenshots and collects evidence in batches before writing. Quick and Automatic skip video screenshots. Ask before processing lets you "
                    "choose a method for each task or batch.")
         if backend == "api":
             st.caption("Your API key is saved on this computer and takes effect immediately. Leave the key blank to keep the saved key. "
@@ -596,24 +601,14 @@ def processing_panel() -> None:
                         if st.button("Retry with Automatic", key=f"retry-auto-{row['id']}"):
                             try:
                                 tasks.retry_processing(connection, row["id"],
-                                    summary_route=SummaryRoute(**{**route, "method": "auto"}))
+                                    summary_route=SummaryRoute(backend=summary_route.backend, method="auto",
+                                        base_url=summary_route.base_url, model=summary_route.model))
                                 manager.pump()
                                 st.rerun()
                             except ValueError as exc:
                                 st.error(str(exc))
+                    st.caption("Retry uses your current summary engine and API settings.")
                     if st.button("Retry processing", key=f"retry-process-{row['id']}", disabled=retry_method is None):
-                        if ask_summary_method:
-                            if queue_summary(tasks.retry_processing, connection, row["id"], method=retry_method,
-                                             route=SummaryRoute(**route)):
-                                st.rerun()
-                        else:
-                            tasks.retry_processing(connection, row["id"])
-                            manager.pump()
-                            st.rerun()
-                    if route.get("backend", "local") != summary_route.backend and st.button(
-                        f"Retry with {backends[summary_route.backend]}", key=f"retry-route-{row['id']}",
-                        disabled=retry_method is None,
-                    ):
                         if queue_summary(tasks.retry_processing, connection, row["id"], method=retry_method):
                             st.rerun()
                 elif row["status"] == "ready":

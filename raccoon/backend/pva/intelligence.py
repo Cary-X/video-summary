@@ -230,7 +230,7 @@ def chat(messages: list[dict], *, vision: bool = False, purpose: str = "other") 
         if vision:
             raise ValueError("The local text model accepts text only")
         route = summary_router.current.get()
-        if route.backend == "api" and purpose in {"summary notes", "summary"}:
+        if route.backend == "api":
             output = summary_router.complete(route, messages)
             try:
                 choice = output["choices"][0]
@@ -254,6 +254,8 @@ def chat(messages: list[dict], *, vision: bool = False, purpose: str = "other") 
     model = ("deepseek-flash" if host == "api.deepseek.com" else
              ((os.getenv("PVA_VISION_MODEL") if vision else None) or
               os.getenv("PVA_LLM_MODEL") or os.getenv("LLM_MODEL") or ""))
+    # Prefer the credential explicitly saved in Settings for this exact route.
+    key = summary_router.saved_key(base.rstrip("/"), model) or key
     missing = [name for name, value in (
         ("PVA_LLM_BASE_URL", base), ("PVA_LLM_API_KEY", key),
         ("PVA_LLM_MODEL", model)) if not value]
@@ -382,7 +384,10 @@ def read_vision_api(image: Path) -> tuple[dict, str]:
         return result, "deepseek-flash"
     route = summary_router.SummaryRoute(
         backend="api", base_url=os.getenv("PVA_VISION_API_BASE_URL", ""),
-        model=os.getenv("PVA_VISION_API_MODEL", ""), api_key=os.getenv("PVA_VISION_API_KEY", ""),
+        model=os.getenv("PVA_VISION_API_MODEL", ""),
+        api_key=(summary_router.saved_key(
+            os.getenv("PVA_VISION_API_BASE_URL", "").rstrip("/"),
+            os.getenv("PVA_VISION_API_MODEL", "")) or os.getenv("PVA_VISION_API_KEY", "")),
     )
     registered = summary_router.SummaryRoute(**route.register())
     response = summary_router.complete(registered, messages)

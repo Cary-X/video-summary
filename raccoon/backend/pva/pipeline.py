@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from . import intelligence, media, store
+from . import intelligence, media, store, summary_router
 
 
 class ProcessingCancelled(Exception):
@@ -75,17 +75,13 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         if (video["status"] == "failed" and len(stages) == 2 and stages[0] == "failed"
                 and stages[1] in {"summary", "summary warning", "classification"}):
             return resummarize(db, video_id, skill_file=skill_file, on_progress=on_progress)
-        resume_translation = (
-            video["status"] == "failed" and bool(video["language"]) and
-            stages == ["failed", "translation"]
-        )
         segment_rows = []
-        if resume_translation:
+        if video["language"] and (video["transcript_source"] or stages == ["failed", "translation"]):
             segment_rows = [dict(x) for x in db.execute(
                 "SELECT * FROM segments WHERE video_id=? ORDER BY seq", (video_id,))]
         if segment_rows:
             language = video["language"]
-            stage("transcribed", "Reusing the saved transcript after the translation failure", 0.44)
+            stage("transcribed", "Reusing the saved transcript; extraction and ASR are already complete", 0.44)
         elif upload is not None:
             path = Path(upload["path"])
             if upload["kind"] != "webpage" and not path.is_file():
@@ -199,7 +195,8 @@ def process(db: sqlite3.Connection, video_id: str, *, asset_dir: Path,
         else:
             stage("translation", "Document is summarized directly in the selected language" if is_document
                   else f"Skipped: transcript is already {target}", 0.65)
-        cues = [] if upload is not None else _visual_cues(segment_rows)
+        cues = (_visual_cues(segment_rows)
+                if upload is None and summary_router.current.get().method == "batched" else [])
         frames = [dict(row) for row in db.execute(
             "SELECT * FROM frames WHERE video_id=? ORDER BY at_seconds", (video_id,))] if is_document else []
         if cues:
