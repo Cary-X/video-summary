@@ -1,16 +1,46 @@
-"""Per-job summary routes. Provider credentials are kept in process memory."""
+"""Per-job summary routes. Provider credentials are stored in the local private data directory."""
 from __future__ import annotations
 
 import json
+import sqlite3
+from pathlib import Path
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 
 _keys: dict[tuple[str, str], str] = {}
+
+
+def _credential_db() -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / "api-credentials.db"
+
+
+def saved_key(base_url: str, model: str) -> str:
+    path = _credential_db()
+    if path.exists():
+        with closing(sqlite3.connect(path)) as db, db:
+            row = db.execute("SELECT secret FROM credentials WHERE endpoint=? AND model=?",
+                             (base_url, model)).fetchone()
+        if row:
+            return row[0]
+    return _keys.get((base_url, model), "")
+
+
+def save_key(base_url: str, model: str, key: str) -> None:
+    path = _credential_db()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("""CREATE TABLE IF NOT EXISTS credentials (
+            endpoint TEXT NOT NULL, model TEXT NOT NULL, secret TEXT NOT NULL,
+            PRIMARY KEY(endpoint, model))""")
+        db.execute("""INSERT INTO credentials VALUES(?,?,?)
+            ON CONFLICT(endpoint,model) DO UPDATE SET secret=excluded.secret""",
+            (base_url, model, key))
+    _keys[base_url, model] = key
 
 
 def _api_endpoint(value: str) -> tuple[str, bool]:
@@ -54,7 +84,7 @@ class SummaryRoute:
                 if "\r" in key or "\n" in key:
                     raise ValueError("Enter the summary API key on one line.")
                 _keys[base_url, model] = key
-            elif not local and (base_url, model) not in _keys:
+            elif not local and not saved_key(base_url, model):
                 raise ValueError("Enter the summary API key in Settings, then retry.")
         return {"backend": self.backend, "method": self.method, "base_url": base_url,
                 "model": model}
@@ -82,7 +112,7 @@ _opener = urllib.request.build_opener(_NoRedirect())
 
 def list_models(base_url: str, api_key: str = "", *, saved_model: str = "") -> list[str]:
     base_url, _ = _api_endpoint(base_url)
-    key = api_key.strip() or _keys.get((base_url, saved_model.strip()), "")
+    key = api_key.strip() or saved_key(base_url, saved_model.strip())
     if "\r" in key or "\n" in key:
         raise ValueError("Enter the summary API key on one line.")
     headers = {"Authorization": "Bearer " + key} if key else {}
@@ -104,7 +134,7 @@ def list_models(base_url: str, api_key: str = "", *, saved_model: str = "") -> l
 
 
 def complete(route: SummaryRoute, messages: list[dict]) -> dict:
-    key = _keys.get((route.base_url, route.model), "")
+    key = saved_key(route.base_url, route.model)
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = "Bearer " + key

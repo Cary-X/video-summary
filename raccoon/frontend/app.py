@@ -264,7 +264,7 @@ def settings_page() -> None:
         same_endpoint = bool(saved_url) and base_url.strip().rstrip("/") == saved_url
         if provider:
             api_key = st.text_input("API key", type="password", key="summary_api_key_input",
-                                    help="The key is held in memory. Enter it again after the app restarts.")
+                                    help="Saved locally when you save summary settings. Leave blank to keep your saved key.")
         if base_url.strip() and (provider == "Other provider" or api_key.strip() or
                                  (same_endpoint and api_configured)):
             lookup = (base_url.strip().rstrip("/"), hashlib.sha256(api_key.strip().encode()).digest(),
@@ -303,7 +303,8 @@ def settings_page() -> None:
                    "Detailed collects evidence in batches before writing. Ask before processing lets you "
                    "choose a method for each task or batch.")
         if backend == "api":
-            st.caption("The selected provider receives transcript excerpts and any extracted visual text "
+            st.caption("Your API key is saved on this computer and takes effect immediately. Leave the key blank to keep the saved key. "
+                       "The selected provider receives transcript excerpts and any extracted visual text "
                        "needed to write the summary. Provider charges may apply.")
         elif not local_installed:
             st.warning("Install the local runtime and model with setup-local-llama.ps1 first.")
@@ -313,6 +314,9 @@ def settings_page() -> None:
                     raise ValueError("Choose an API provider.")
                 chosen = SummaryRoute(backend=backend, method="auto" if method == "ask" else method, base_url=base_url,
                                       model=model, api_key=api_key).register()
+                if backend == "api" and api_key.strip():
+                    from pva.summary_router import save_key
+                    save_key(chosen["base_url"], chosen["model"], api_key.strip())
                 chosen["method"] = method
                 if backend != "api":
                     chosen = {key: chosen[key] for key in ("backend", "method")}
