@@ -18,3 +18,6 @@ markdown-it-py>=3.0
 Pillow>=10
 rapidocr>=3.10
 onnxruntime>=1.17
+
+tzdata
+tzlocal>=5

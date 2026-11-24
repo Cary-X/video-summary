@@ -3,6 +3,7 @@ import configparser
 from contextlib import closing
 from pathlib import Path
 import re
+import sqlite3
 import tkinter as tk
 from tkinter import filedialog, ttk
 import webbrowser
@@ -24,7 +25,7 @@ PANEL, EDGE = "#f8ebd8", "#8b6243"
 def main():
     window = TkinterDnD.Tk()
     window.title("Raccoon Box")
-    window.iconbitmap(str(ASSETS / "raccoon-launcher.ico"))
+    window.iconbitmap(str(ASSETS / "raccoon-box.ico"))
     window.attributes("-topmost", True)
     window.configure(bg=PAPER, padx=16, pady=14)
     window.minsize(365, 300)
@@ -40,7 +41,7 @@ def main():
         webbrowser.open("http://127.0.0.1:8507/" + ("?view=library" if library else ""))
 
     def update_count():
-        if bubble.winfo_manager():
+        if bubble.state() != "withdrawn":
             with closing(store.connect(DATA / "personal.db")) as db:
                 count = db.execute("SELECT COUNT(*) FROM videos WHERE status='ready' AND summary<>''").fetchone()[0]
             summary_count.set(f"{count} summaries are ready in your Library.")
@@ -50,7 +51,7 @@ def main():
         window.after(2500, poll_count)
 
     def acknowledge():
-        bubble.pack_forget()
+        bubble.withdraw()
         status.set("")
 
     def save_settings(*_):
@@ -59,6 +60,17 @@ def main():
               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
                 [("desktop_auto", str(int(automatic.get()))), ("desktop_method", method.get()),
                  ("desktop_source_type", override.get())])
+
+    def show_confirmation():
+        bubble.update_idletasks()
+        width, height = bubble.winfo_reqwidth(), bubble.winfo_reqheight()
+        x = window.winfo_rootx() + window.winfo_width() + 10
+        if x + width > window.winfo_screenwidth():
+            x = max(0, window.winfo_rootx() - width - 10)
+        y = min(queue_label.winfo_rooty(), window.winfo_screenheight() - height)
+        bubble.geometry(f"+{x}+{max(0, y)}")
+        bubble.deiconify()
+        bubble.lift()
 
     def accept(sources):
         added, errors = 0, []
@@ -75,10 +87,10 @@ def main():
                     errors.append(str(exc))
         status.set(errors[0] if errors else "")
         if added:
-            received.set("Got it!" if added == 1 else f"Got them! {added} items received.")
-            bubble.pack(fill="x", pady=(0, 10), after=zone)
+            received.set("Got it!" if added == 1 else f"Got it! {added} items received.")
+            show_confirmation()
             update_count()
-            refresh_box()
+            update_box_status()
 
     def drop(event):
         data = event.data.strip().strip("\x00")
@@ -94,7 +106,11 @@ def main():
 
     busy = False
     zone = tk.Canvas(window, height=252, background=PAPER, highlightthickness=0)
-    zone.pack(fill="x", pady=(2, 10))
+    zone.pack(fill="x", pady=(2, 4))
+    queue_status = tk.StringVar(value="0 processing · 0 queued")
+    queue_label = tk.Label(window, textvariable=queue_status, bg=PAPER, fg=INK,
+                           font=("Trebuchet MS", 11, "bold"))
+    queue_label.pack(fill="x", pady=(0, 10))
 
     with Image.open(ASSETS / "r-library-box-v2.png") as source:
         box_art = source.convert("RGBA")
@@ -106,7 +122,7 @@ def main():
     def draw_zone(event=None):
         nonlocal box_photo, box_width, activity_text
         width = event.width if event else zone.winfo_width()
-        if width < 10:
+        if width <= 28:
             return
         if width != box_width:
             illustration = box_art.copy()
@@ -125,16 +141,30 @@ def main():
     def refresh_box():
         nonlocal busy
         with closing(store.connect(DATA / "personal.db")) as db:
-            busy = bool(db.execute("""
-                SELECT 1 FROM processing_tasks WHERE status IN ('queued','running')
-                UNION ALL SELECT 1 FROM finding_tasks WHERE status IN ('queued','running')
-                UNION ALL SELECT 1 FROM desktop_inbox WHERE automatic=1 AND status IN ('pending','sending')
-                LIMIT 1
-            """).fetchone())
+            running, queued = db.execute("""
+                SELECT COUNT(CASE WHEN status = 'running' THEN 1 END),
+                       COUNT(CASE WHEN status = 'queued' THEN 1 END)
+                FROM (
+                    SELECT status FROM processing_tasks WHERE status IN ('running', 'queued')
+                    UNION ALL
+                    SELECT status FROM finding_tasks WHERE status IN ('running', 'queued')
+                    UNION ALL
+                    SELECT 'queued' FROM desktop_inbox
+                    WHERE automatic=1 AND status IN ('pending', 'sending')
+                )
+            """).fetchone()
+        busy = bool(running or queued)
+        queue_status.set(f"{running} processing · {queued} queued")
         draw_zone()
 
+    def update_box_status():
+        try:
+            refresh_box()
+        except sqlite3.OperationalError:
+            queue_status.set("Refreshing queue…")
+
     def update_box():
-        refresh_box()
+        update_box_status()
         window.after(1500, update_box)
 
     zone.bind("<Configure>", draw_zone)
@@ -142,7 +172,12 @@ def main():
         target.drop_target_register(DND_FILES, DND_TEXT, "DND_URL")
         target.dnd_bind("<<Drop>>", drop)
 
-    bubble = tk.Frame(window, bg=PAPER)
+    bubble = tk.Toplevel(window, bg=PAPER)
+    bubble.withdraw()
+    bubble.overrideredirect(True)
+    bubble.transient(window)
+    bubble.attributes("-topmost", True)
+    window.bind("<Unmap>", lambda event: bubble.withdraw() if event.widget is window else None)
     received = tk.StringVar()
     speech = tk.Frame(bubble, bg=TAN, highlightbackground=INK, highlightthickness=2, padx=10, pady=7)
     speech.pack(side="left", fill="both", expand=True)

@@ -339,6 +339,20 @@ def settings_page() -> None:
                               "reading_size": selected_size, "youtube_cookie_browser": cookie_choice})
             navigate("Settings", "Reading and browser settings saved.", saved=True)
 
+    st.subheader("Time zone", anchor=False)
+    options = usage_visuals.timezone_options()
+    saved_zone = prefs.get("dashboard_timezone", "auto")
+    detected = usage_visuals.automatic_timezone()
+    with st.form("timezone_settings"):
+        selected_zone = st.selectbox(
+            "Usage dashboard time zone", options,
+            index=options.index(saved_zone) if saved_zone in options else 0,
+            format_func=lambda value: f"Automatic ({detected})" if value == "auto" else value,
+            help="Automatic uses the time zone of the computer running Raccoon Agent.")
+        if st.form_submit_button("Save time zone"):
+            save_preferences({"dashboard_timezone": selected_zone})
+            navigate("Settings", "Time zone saved.", saved=True)
+
     st.subheader("Storage location", anchor=False)
     st.write("Raccoon Agent creates a folder named `data` beside the app on first run. "
              "Your library, uploads, and saved screenshots are stored there.")
@@ -769,9 +783,13 @@ if page == "Raccoon activity" and activity == "Usage":
     st.caption("Measured from model responses since usage tracking was enabled. "
                "Earlier calls cannot be reconstructed from the video records.")
     period = st.selectbox("Period", ["7 days", "30 days", "All time"])
-    since = None if period == "All time" else (
-        datetime.now(timezone.utc) - timedelta(days=7 if period == "7 days" else 30)
-        ).isoformat(timespec="seconds")
+    zone = usage_visuals.dashboard_timezone(prefs.get("dashboard_timezone", "auto"))
+    st.caption(f"Time zone · {zone}")
+    since = None
+    if period != "All time":
+        first_day = datetime.now(zone).date() - timedelta(days=6 if period == "7 days" else 29)
+        since = datetime.combine(first_day, datetime.min.time(), zone).astimezone(
+            timezone.utc).isoformat(timespec="seconds")
     usage_rows = [dict(row) for row in db.execute("""
       SELECT u.*,v.title,v.category FROM ai_usage u
       LEFT JOIN videos v ON v.id=u.video_id
@@ -779,7 +797,7 @@ if page == "Raccoon activity" and activity == "Usage":
     if not usage_rows:
         st.info("No measured AI calls in this period yet.")
     else:
-        usage = usage_visuals.prepare_usage(usage_rows)
+        usage = usage_visuals.prepare_usage(usage_rows, zone)
         total_tokens = int(usage["total_tokens"].sum())
         low = float(usage["estimated_cost_low_usd"].fillna(0).sum())
         high = float(usage["estimated_cost_high_usd"].fillna(0).sum())
@@ -792,14 +810,14 @@ if page == "Raccoon activity" and activity == "Usage":
         st.caption("The estimate covers DeepSeek Flash. Local inference costs $0 in API fees. "
                    "Custom summary API pricing is unavailable here; check your provider’s bill.")
         cost_daily = usage_visuals.complete_days(usage, [
-            "estimated_cost_low_usd", "estimated_cost_high_usd"], period)
+            "estimated_cost_low_usd", "estimated_cost_high_usd"], period, zone)
         st.altair_chart(usage_visuals.daily_bars(
             cost_daily, {"estimated_cost_low_usd": "Off-peak estimate",
                          "estimated_cost_high_usd": "Peak estimate"},
             title="Estimated USD cost by day", colors=["#fbbf24", "#fb923c"],
             money=True), width="stretch")
         token_daily = usage_visuals.complete_days(usage, [
-            "prompt_tokens", "completion_tokens"], period)
+            "prompt_tokens", "completion_tokens"], period, zone)
         st.altair_chart(usage_visuals.daily_bars(
             token_daily, {"prompt_tokens": "Input", "completion_tokens": "Output"},
             title="Tokens by day", colors=["#7dd3fc", "#2563eb"]),
@@ -809,13 +827,13 @@ if page == "Raccoon activity" and activity == "Usage":
             left, right = st.columns(2)
             with left:
                 calls = usage_visuals.complete_days(model_usage.assign(calls=1),
-                                                    ["calls"], period)
+                                                    ["calls"], period, zone)
                 st.altair_chart(usage_visuals.daily_bars(
                     calls, {"calls": "API calls"}, title="Requests",
                     colors=["#3b82f6"]), width="stretch")
             with right:
                 model_tokens = usage_visuals.complete_days(model_usage,
-                                                           ["total_tokens"], period)
+                                                           ["total_tokens"], period, zone)
                 st.altair_chart(usage_visuals.daily_bars(
                     model_tokens, {"total_tokens": "Tokens"}, title="Tokens",
                     colors=["#7dd3fc"]), width="stretch")

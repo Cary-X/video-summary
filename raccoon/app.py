@@ -1,8 +1,6 @@
-"""Compatibility entry point for Streamlit."""
+"""Entry point for Streamlit."""
 from pathlib import Path
-import runpy
-import sys
 
-project = Path(__file__).resolve().parent
-sys.path.insert(0, str(project))
-runpy.run_path(str(project / "frontend" / "app.py"), run_name="__main__")
+_source = Path(__file__).resolve().parent / "frontend" / "app.py"
+exec(compile(_source.read_bytes(), str(_source), "exec"),
+     {**globals(), "__file__": str(_source)})

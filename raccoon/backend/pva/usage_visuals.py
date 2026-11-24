@@ -2,13 +2,38 @@
 from __future__ import annotations
 
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
+
+from tzlocal import get_localzone
 
 import altair as alt
 import pandas as pd
 
 
-LOCAL_ZONE = ZoneInfo("Asia/Shanghai")
+@lru_cache(maxsize=1)
+def automatic_timezone() -> ZoneInfo:
+    try:
+        return get_localzone()
+    except (OSError, ValueError, ZoneInfoNotFoundError):
+        return ZoneInfo("UTC")
+
+
+@lru_cache(maxsize=1)
+def timezone_options() -> tuple[str, ...]:
+    return ("auto", *sorted(available_timezones()))
+
+
+def dashboard_timezone(preference: str = "auto") -> ZoneInfo:
+    if preference != "auto":
+        try:
+            return ZoneInfo(preference)
+        except (ValueError, ZoneInfoNotFoundError):
+            pass
+    return automatic_timezone()
+
+
+
 STEP_NAMES = {
     "photo identification": "Identify photo",
     "match checking": "Match video",
@@ -21,14 +46,14 @@ STEP_NAMES = {
 LOCAL_STEPS = ("Local OCR", "Local ASR")
 
 
-def prepare_usage(rows: list[dict]) -> pd.DataFrame:
+def prepare_usage(rows: list[dict], zone: ZoneInfo | None = None) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
     numeric = ("prompt_tokens", "completion_tokens", "total_tokens",
                "cache_hit_tokens", "cache_miss_tokens",
                "estimated_cost_low_usd", "estimated_cost_high_usd")
     for name in numeric:
         frame[name] = pd.to_numeric(frame[name], errors="coerce").fillna(0).clip(lower=0)
-    local = pd.to_datetime(frame["at"], utc=True).dt.tz_convert(LOCAL_ZONE)
+    local = pd.to_datetime(frame["at"], utc=True).dt.tz_convert(zone or automatic_timezone())
     frame["local_time"] = local.dt.strftime("%Y-%m-%d %H:%M")
     frame["day"] = local.dt.tz_localize(None).dt.normalize()
     purpose = frame["purpose"] if "purpose" in frame else pd.Series(
@@ -52,8 +77,9 @@ def step_totals(frame: pd.DataFrame) -> pd.DataFrame:
         "task_step", ignore_index=True)
 
 
-def complete_days(frame: pd.DataFrame, columns: list[str], period: str) -> pd.DataFrame:
-    today = pd.Timestamp(datetime.now(LOCAL_ZONE).date())
+def complete_days(frame: pd.DataFrame, columns: list[str], period: str,
+                  zone: ZoneInfo | None = None) -> pd.DataFrame:
+    today = pd.Timestamp(datetime.now(zone or automatic_timezone()).date())
     start = (today - pd.Timedelta(days=6 if period == "7 days" else 29)
              if period != "All time" else min(frame["day"].min(), today))
     days = pd.date_range(start=start, end=today, freq="D")
@@ -71,13 +97,14 @@ def daily_bars(frame: pd.DataFrame, columns: dict[str, str], *,
     """Use narrow grouped bars and an explicit nonnegative vertical domain."""
     names = list(columns)
     long = frame.melt("day", value_vars=names, var_name="series", value_name="value")
+    long["date_label"] = long["day"].dt.strftime("%Y-%m-%d")
     long["series"] = long["series"].map(columns)
     long["value"] = long["value"].clip(lower=0)
     maximum = _upper(long["value"])
     chart = (alt.Chart(long, title=title).mark_bar(size=5, cornerRadiusTopLeft=2,
                                                     cornerRadiusTopRight=2)
              .encode(
-                 x=alt.X("day:T", title=None,
+                 x=alt.X("day:T", title=None, scale=alt.Scale(type="utc"),
                          axis=alt.Axis(format="%m/%d", labelAngle=0, grid=False)),
                  xOffset=alt.XOffset("series:N", sort=list(columns.values())),
                  y=alt.Y("value:Q", title="USD" if money else None,
@@ -86,7 +113,7 @@ def daily_bars(frame: pd.DataFrame, columns: dict[str, str], *,
                  color=alt.Color("series:N", title=None,
                                  scale=alt.Scale(domain=list(columns.values()),
                                                  range=colors)),
-                 tooltip=[alt.Tooltip("day:T", title="Date", format="%Y-%m-%d"),
+                 tooltip=[alt.Tooltip("date_label:N", title="Date"),
                           alt.Tooltip("series:N", title="Type"),
                           alt.Tooltip("value:Q", title="USD" if money else "Count",
                                       format="$.6f" if money else ",")],

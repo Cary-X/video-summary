@@ -7,7 +7,7 @@ import threading
 
 from streamlit.web import cli
 
-from pva import desktop_inbox, intelligence, store, tasks
+from pva import desktop_inbox, intelligence, store, tasks, usage_visuals
 from backend.installation import configure
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -37,8 +37,10 @@ def main():
                       error='Previous submission was interrupted. Check Processing before retrying.'
                       WHERE status='sending'""")
     intelligence._load_env()
+    usage_visuals.automatic_timezone()
+    usage_visuals.timezone_options()
     threading.Thread(target=consume, name="desktop-inbox", daemon=True).start()
-    sys.argv = ["streamlit", "run", str(PROJECT / "app.py"), "--server.address", "127.0.0.1",
+    sys.argv = ["streamlit", "run", str(PROJECT / "frontend" / "app.py"), "--server.address", "127.0.0.1",
                 "--server.port", "8507", "--server.headless", "true", *sys.argv[1:]]
     cli.main()
 
